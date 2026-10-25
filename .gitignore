@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Datasets: keep on Drive, never in git
+data/*
+!data/README.md
+*.zip
+*.tar
+*.tar.gz
+
+# Model weights: keep on Drive
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Registered faces and attendance logs contain members' faces and names
+app/instance/
+app/registered/
+*.db
+*.sqlite
+*.sqlite3
+
+# Credentials
+kaggle.json
+
+# Logs and editors
+runs/
+wandb/
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
