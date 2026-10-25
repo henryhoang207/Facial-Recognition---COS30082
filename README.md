@@ -97,7 +97,59 @@ _TODO (Đức Anh): how to train, how to run inference, final AUC, chosen thresh
 
 ### Anti-spoofing
 
-_TODO (Hoan): how to train, how to run inference, APCER / BPCER / ACER._
+Owner: Hoan. Code in `src/liveness/`, run end to end with `notebooks/liveness_training.ipynb`.
+
+Two candidates, trained on the same data, crop and schedule:
+
+| Model | Idea | Loss | Trainable part |
+| --- | --- | --- | --- |
+| `mobilenetv3` | ImageNet MobileNetV3-Large, one live/spoof output | BCE | all but the first 4 blocks |
+| `deeppixbis` | DenseNet-161 up to block 2, a 14×14 live/spoof map plus one output ([George & Marcel, 2019](https://arxiv.org/abs/1907.04047)) | ½ BCE on the map + ½ BCE on the output | all |
+
+Input: a square crop of 2.0× the face box resized to 224 px, so phone edges and paper borders stay in view.
+Training draws live and spoof images equally often. Data: CelebA-Spoof (print and replay only) plus our recordings, split by person.
+
+**Train and evaluate** (from the repo root):
+
+```bash
+python -m src.liveness.manifest celeba --data-root DATA --root DATA/spoof_public/CelebA_Spoof --attacks print,replay --max-per-class 20 --out DATA/liveness/celeba.csv
+python -m src.liveness.manifest folder --data-root DATA --root DATA/spoof_recorded --source recorded --test-subjects anh,duc --out DATA/liveness/recorded.csv
+python -m src.liveness.train --model mobilenetv3 --manifest DATA/liveness/celeba.csv DATA/liveness/recorded.csv --data-root DATA --ckpt-dir CKPT
+python -m src.liveness.evaluate --checkpoint CKPT/liveness_mobilenetv3_<date>.pt --manifest DATA/liveness/celeba.csv DATA/liveness/recorded.csv --data-root DATA
+```
+
+Repeat the last two with `--model deeppixbis`. `evaluate` adds both models to `reports/figures/liveness_results.csv` / `.md`
+(one row per model × test source) and saves ROC and score-distribution plots.
+
+**Use in the app:**
+
+```python
+from src.liveness.predictor import LivenessPredictor
+liveness = LivenessPredictor("checkpoints/liveness_mobilenetv3_<date>.pt")
+label, prob_live = liveness.predict_frame(frame, box)   # crops with its own size and scale
+```
+
+**Metrics** (ISO/IEC 30107-3). The threshold is picked on val at the equal-error point, saved in the checkpoint, and never tuned on test.
+
+- **APCER**: attacks accepted as live, per attack type; we report the worst type.
+- **BPCER**: live faces rejected as spoof.
+- **ACER** = (APCER + BPCER) / 2: the number we compare models on.
+- Also reported: AUC, EER, accuracy, BPCER at APCER = 5%.
+
+**Targets.** Test people are never in training. "Recorded" is our own faces, prints and phones, the closest to the demo.
+
+| Check | Minimum | Good |
+| --- | --- | --- |
+| ACER, CelebA-Spoof test | ≤ 10% | ≤ 5% |
+| ACER, recorded test people | ≤ 15% | ≤ 10% |
+| Live demo: print and phone attacks rejected (20 tries each) | 18 / 20 | 20 / 20 |
+| Live demo: real faces accepted (20 tries) | 18 / 20 | 19 / 20 |
+| Liveness time per face, demo laptop CPU | ≤ 300 ms (check every 3rd frame) | ≤ 100 ms (every frame) |
+
+Measured on a 10-thread laptop CPU at 224 px: MobileNetV3 about 90 ms, DeepPixBiS about 270 ms per face.
+The model with the lower ACER on recorded test people goes in the app; if they are within 2 points, take the faster one.
+
+**Tests:** `python -m pytest tests/test_liveness.py` (CPU, about a minute) trains both models for one epoch on random images.
 
 ### Emotion detection
 
