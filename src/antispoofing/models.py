@@ -1,4 +1,4 @@
-"""The two liveness candidates. Both output a score = probability the face is live.
+"""The two anti-spoofing candidates. Both output a score = probability the face is live.
 
 Each model returns a dict from forward() and owns its loss and its score, so train.py
 and evaluate.py treat them the same. Label convention: 1 = live, 0 = spoof.

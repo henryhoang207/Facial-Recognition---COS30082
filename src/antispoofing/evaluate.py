@@ -1,13 +1,13 @@
-"""Evaluate a liveness checkpoint on the test split and add it to the comparison table.
+"""Evaluate a anti-spoofing checkpoint on the test split and add it to the comparison table.
 
 Usage (from the repo root):
-    python -m src.liveness.evaluate --checkpoint DRIVE/checkpoints/liveness_mobilenetv3_2026-11-01.pt \\
-        --manifest DATA/liveness/celeba.csv DATA/liveness/recorded.csv --data-root DATA
+    python -m src.antispoofing.evaluate --checkpoint DRIVE/checkpoints/antispoofing_mobilenetv3_2026-11-01.pt \\
+        --manifest DATA/antispoofing/celeba.csv DATA/antispoofing/recorded.csv --data-root DATA
 
 Uses the threshold stored in the checkpoint (picked on val), never one tuned on test.
 Writes to --fig-dir:
-    liveness_<model>_roc.png, liveness_<model>_scores.png, liveness_<model>_test.json
-    liveness_results.csv / .md   one row per model x test source; re-running replaces the model's rows
+    antispoofing_<model>_roc.png, antispoofing_<model>_scores.png, antispoofing_<model>_test.json
+    antispoofing_results.csv / .md   one row per model x test source; re-running replaces the model's rows
 """
 
 import argparse
@@ -98,16 +98,16 @@ def main():
         curves[name] = (part.label.to_numpy(), part.score.to_numpy())
 
     args.fig_dir.mkdir(parents=True, exist_ok=True)
-    plot_roc(curves, args.fig_dir / f"liveness_{tag}_roc.png", f"{tag}: APCER vs BPCER on {args.split}")
-    plot_scores(df, threshold, args.fig_dir / f"liveness_{tag}_scores.png", f"{tag}: test score distribution")
-    (args.fig_dir / f"liveness_{tag}_test.json").write_text(json.dumps(results, indent=2))
+    plot_roc(curves, args.fig_dir / f"antispoofing_{tag}_roc.png", f"{tag}: APCER vs BPCER on {args.split}")
+    plot_scores(df, threshold, args.fig_dir / f"antispoofing_{tag}_scores.png", f"{tag}: test score distribution")
+    (args.fig_dir / f"antispoofing_{tag}_test.json").write_text(json.dumps(results, indent=2))
 
     rows = []
     for name, r in results.items():
         worst = max(r["apcer_per_attack"], key=r["apcer_per_attack"].get) if r["apcer_per_attack"] else ""
         rows.append({**{k: r[k] for k in TABLE_COLUMNS if k in r}, "model": tag, "test_set": name,
                      "worst_attack": worst, "checkpoint": args.checkpoint.name})
-    table_path = args.fig_dir / "liveness_results.csv"
+    table_path = args.fig_dir / "antispoofing_results.csv"
     table = pd.read_csv(table_path) if table_path.exists() else pd.DataFrame(columns=TABLE_COLUMNS)
     table = pd.concat([table[table.model != tag], pd.DataFrame(rows)], ignore_index=True)[TABLE_COLUMNS]
     table = table.sort_values(["test_set", "acer"]).reset_index(drop=True)
@@ -119,7 +119,7 @@ def main():
     shown["auc"] = shown["auc"].astype(float).map(lambda v: f"{v:.4f}")
     md = ["| " + " | ".join(shown.columns) + " |", "|" + " --- |" * len(shown.columns)]
     md += ["| " + " | ".join(map(str, row)) + " |" for row in shown.itertuples(index=False)]
-    (args.fig_dir / "liveness_results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (args.fig_dir / "antispoofing_results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(shown.to_string(index=False))
     for name, r in results.items():
         print(f"{name}: APCER per attack " + ", ".join(f"{a} {v:.2%}" for a, v in r["apcer_per_attack"].items()))

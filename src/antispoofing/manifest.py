@@ -1,4 +1,4 @@
-"""Build a liveness manifest CSV from a dataset folder.
+"""Build a anti-spoofing manifest CSV from a dataset folder.
 
 A manifest has one row per image:
     path, label, attack, subject, source, split, x1, y1, x2, y2
@@ -7,10 +7,10 @@ face in original pixel coordinates. Training and evaluation only read manifests,
 new dataset only needs a new builder here.
 
 Usage (from the repo root):
-    python -m src.liveness.manifest celeba --data-root DATA --root DATA/spoof_public/CelebA_Spoof \\
-        --attacks print,replay --max-per-class 20 --out DATA/liveness/celeba.csv
-    python -m src.liveness.manifest folder --data-root DATA --root DATA/spoof_recorded \\
-        --source recorded --test-subjects anh,duc --out DATA/liveness/recorded.csv
+    python -m src.antispoofing.manifest celeba --data-root DATA --root DATA/spoof_public/CelebA_Spoof \\
+        --attacks print,replay --max-per-class 20 --out DATA/antispoofing/celeba.csv
+    python -m src.antispoofing.manifest folder --data-root DATA --root DATA/spoof_recorded \\
+        --source recorded --test-subjects anh,duc --out DATA/antispoofing/recorded.csv
 """
 
 import argparse

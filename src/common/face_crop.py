@@ -10,7 +10,7 @@ def crop_face(frame: np.ndarray, box: Box, size: int = 112, scale: float = 1.0) 
     """Crop one face from a BGR frame and resize it to `size` x `size`.
 
     The crop is a square centred on the box, with side `scale` x the longer box side.
-    Recognition and emotion use the tight crop (scale 1.0); liveness uses a wider one
+    Recognition and emotion use the tight crop (scale 1.0); anti-spoofing uses a wider one
     so spoof cues around the face (phone edges, paper borders) stay in view.
     Parts of the crop outside the frame are filled with black.
 

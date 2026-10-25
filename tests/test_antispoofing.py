@@ -1,4 +1,4 @@
-"""Liveness tests. The pipeline test trains both models for one epoch on tiny random images (CPU, ~1 min)."""
+"""Anti-spoofing tests. The pipeline test trains both models for one epoch on tiny random images (CPU, ~1 min)."""
 
 import subprocess
 import sys
@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from src.common.face_crop import crop_face
-from src.liveness.metrics import eer_threshold, summarize
+from src.antispoofing.metrics import eer_threshold, summarize
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -64,7 +64,7 @@ def test_pipeline_end_to_end(tmp_path, model):
                 cv2.imwrite(str(root / person / cls / f"{i}.jpg"), rng.integers(0, 255, (80, 80, 3), np.uint8))
 
     manifest = tmp_path / "data" / "recorded.csv"
-    run("-m", "src.liveness.manifest", "folder", "--root", root, "--data-root", tmp_path / "data",
+    run("-m", "src.antispoofing.manifest", "folder", "--root", root, "--data-root", tmp_path / "data",
         "--detect", "none", "--test-subjects", "p5", "--val-frac", "0.25", "--out", manifest)
     df = pd.read_csv(manifest)
     assert set(df[df.split == "test"].subject) == {"p5"}
@@ -72,18 +72,18 @@ def test_pipeline_end_to_end(tmp_path, model):
 
     ckpt_dir, fig_dir = tmp_path / "ckpt", tmp_path / "fig"
     common = ["--manifest", manifest, "--data-root", tmp_path / "data", "--fig-dir", fig_dir, "--num-workers", "0"]
-    run("-m", "src.liveness.train", "--model", model, "--ckpt-dir", ckpt_dir, "--epochs", "1",
+    run("-m", "src.antispoofing.train", "--model", model, "--ckpt-dir", ckpt_dir, "--epochs", "1",
         "--img-size", "64", "--batch-size", "8", "--no-pretrained", *common)
-    ckpt = next(ckpt_dir.glob(f"liveness_{model}_*.pt"))
-    run("-m", "src.liveness.evaluate", "--checkpoint", ckpt, *common)
+    ckpt = next(ckpt_dir.glob(f"antispoofing_{model}_*.pt"))
+    run("-m", "src.antispoofing.evaluate", "--checkpoint", ckpt, *common)
 
-    table = pd.read_csv(fig_dir / "liveness_results.csv")
+    table = pd.read_csv(fig_dir / "antispoofing_results.csv")
     assert list(table.model) == [model] and table.acer.between(0, 1).all()
     for kind in ["training", "roc", "scores"]:
-        assert (fig_dir / f"liveness_{model}_{kind}.png").exists()
+        assert (fig_dir / f"antispoofing_{model}_{kind}.png").exists()
 
-    from src.liveness.predictor import LivenessPredictor
-    liveness = LivenessPredictor(ckpt, device="cpu")
+    from src.antispoofing.predictor import AntiSpoofingPredictor
+    antispoofing = AntiSpoofingPredictor(ckpt, device="cpu")
     frame = rng.integers(0, 255, (120, 160, 3), np.uint8)
-    label, prob = liveness.predict_frame(frame, (40, 20, 100, 80))
+    label, prob = antispoofing.predict_frame(frame, (40, 20, 100, 80))
     assert label in {"live", "spoof"} and 0 <= prob <= 1

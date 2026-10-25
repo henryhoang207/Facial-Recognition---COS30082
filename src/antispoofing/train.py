@@ -1,10 +1,10 @@
-"""Train one liveness model and keep the checkpoint with the best val ACER.
+"""Train one anti-spoofing model and keep the checkpoint with the best val ACER.
 
 Usage (from the repo root):
-    python -m src.liveness.train --model mobilenetv3 --manifest DATA/liveness/celeba.csv DATA/liveness/recorded.csv \\
+    python -m src.antispoofing.train --model mobilenetv3 --manifest DATA/antispoofing/celeba.csv DATA/antispoofing/recorded.csv \\
         --data-root DATA --ckpt-dir DRIVE/checkpoints --epochs 15
 
-The checkpoint is saved as <ckpt-dir>/liveness_<model>_<date>.pt and stores the weights,
+The checkpoint is saved as <ckpt-dir>/antispoofing_<model>_<date>.pt and stores the weights,
 the config, and the threshold picked on val (equal error rate point). evaluate.py and
 the app both use that threshold, so the test set never influences it.
 """
@@ -135,7 +135,7 @@ def main():
 
     args.ckpt_dir.mkdir(parents=True, exist_ok=True)
     args.fig_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = args.ckpt_dir / f"liveness_{tag}_{date.today().isoformat()}.pt"
+    ckpt_path = args.ckpt_dir / f"antispoofing_{tag}_{date.today().isoformat()}.pt"
     history, best, since_best = [], None, 0
 
     for epoch in range(1, args.epochs + 1):
@@ -161,8 +161,8 @@ def main():
                 break
 
     history = pd.DataFrame(history)
-    history.to_csv(args.fig_dir / f"liveness_{tag}_history.csv", index=False)
-    plot_history(history, args.fig_dir / f"liveness_{tag}_training.png")
+    history.to_csv(args.fig_dir / f"antispoofing_{tag}_history.csv", index=False)
+    plot_history(history, args.fig_dir / f"antispoofing_{tag}_training.png")
     print(f"best val ACER {best['acer']:.2%} at threshold {best['threshold']:.3f} -> {ckpt_path}")
 
 

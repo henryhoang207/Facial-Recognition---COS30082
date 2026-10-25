@@ -1,4 +1,4 @@
-"""Liveness dataset: reads manifest CSVs (see manifest.py) and crops faces on the fly."""
+"""Anti-spoofing dataset: reads manifest CSVs (see manifest.py) and crops faces on the fly."""
 
 from pathlib import Path
 
@@ -34,7 +34,7 @@ def train_transform(size: int) -> v2.Compose:
     ])
 
 
-class LivenessDataset(Dataset):
+class AntiSpoofingDataset(Dataset):
     def __init__(self, df: pd.DataFrame, data_root: Path, size: int, crop_scale: float, train: bool):
         self.df = df.reset_index(drop=True)
         self.data_root = Path(data_root)
@@ -63,7 +63,7 @@ def balanced_sampler(labels: pd.Series) -> WeightedRandomSampler:
 
 def make_loader(df: pd.DataFrame, data_root: Path, size: int, crop_scale: float, batch_size: int,
                 num_workers: int, train: bool) -> DataLoader:
-    ds = LivenessDataset(df, data_root, size, crop_scale, train)
+    ds = AntiSpoofingDataset(df, data_root, size, crop_scale, train)
     return DataLoader(ds, batch_size=batch_size, sampler=balanced_sampler(ds.df.label) if train else None,
                       shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available(),
                       drop_last=train and len(ds) > batch_size)

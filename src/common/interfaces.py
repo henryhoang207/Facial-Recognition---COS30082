@@ -24,7 +24,7 @@ class Embedder(Protocol):
         ...
 
 
-class LivenessModel(Protocol):
+class AntiSpoofingModel(Protocol):
     def predict(self, face: np.ndarray) -> tuple[str, float]:
         """Return ("live" | "spoof", probability that the face is live)."""
         ...

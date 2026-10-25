@@ -1,10 +1,10 @@
-"""Liveness model for the web app. Implements `LivenessModel` from src/common/interfaces.py.
+"""Anti-spoofing model for the web app. Implements `AntiSpoofingModel` from src/common/interfaces.py.
 
-    liveness = LivenessPredictor("checkpoints/liveness_mobilenetv3_2026-11-01.pt")
-    face = crop_face(frame, box, size=liveness.img_size, scale=liveness.crop_scale)
-    label, prob_live = liveness.predict(face)
+    antispoofing = AntiSpoofingPredictor("checkpoints/antispoofing_mobilenetv3_2026-11-01.pt")
+    face = crop_face(frame, box, size=antispoofing.img_size, scale=antispoofing.crop_scale)
+    label, prob_live = antispoofing.predict(face)
 
-Liveness uses a wider crop than recognition, so crop with the predictor's own
+Anti-spoofing uses a wider crop than recognition, so crop with the predictor's own
 img_size and crop_scale (or call predict_frame with the full frame).
 """
 
@@ -21,7 +21,7 @@ from .data import eval_transform
 from .evaluate import load_checkpoint
 
 
-class LivenessPredictor:
+class AntiSpoofingPredictor:
     def __init__(self, checkpoint: str | Path, device: str | None = None):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model, cfg, self.threshold = load_checkpoint(Path(checkpoint), self.device)
