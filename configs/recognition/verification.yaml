@@ -1,0 +1,14 @@
+verification:
+  root: ../../data/VGGFace2
+  pairs: ../../data/manifests/verification_pairs_val.csv
+  pairs_format: csv
+  target_fpr: 0.01
+  selection_metric: cosine
+models: {}
+baseline: true
+split: val
+size: 112
+crop_scale: 1.0
+device: cpu
+output_dir: ../../reports/figures/recognition
+calibration: null

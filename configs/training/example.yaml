@@ -1,0 +1,39 @@
+# Shared settings with a small synthetic dataset for checking the trainer setup.
+training:
+  epochs: 5
+  batch_size: 16
+  lr: 0.01
+  weight_decay: 0.0001
+  optimizer: adamw
+  adam_betas: [0.9, 0.999]
+  adam_eps: 1.0e-8
+  adam_amsgrad: false
+  sgd_momentum: 0.0
+  sgd_dampening: 0.0
+  sgd_nesterov: false
+  parameter_groups: []
+  scheduler: cosine
+  eta_min: 0.0
+  cosine_t_max: null
+  warmup_epochs: 0
+  warmup_start_factor: 0.1
+  accumulation_steps: 1
+  seed: 42
+  device: cpu
+  amp: false
+  amp_init_scale: 65536.0
+  deterministic: false
+  num_workers: 0
+  monitor: val_loss
+  mode: min
+  patience: null
+  min_delta: 0.0
+  early_stopping_start_epoch: null
+  clip_grad_norm: null
+  progress: true
+data:
+  train_samples: 64
+  val_samples: 16
+  input_features: 4
+  noise_std: 0.05
+output_dir: ../../runs/examples

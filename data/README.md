@@ -1,5 +1,22 @@
 # Data
 
+## Local processed datasets
+
+The downloaded local datasets are `VGGFace2/`, `CelebA_Spoof_processed/`, `DFEW_processed/`, and `faces/`.
+Their existing DuckDB catalogs are read-only inputs. Project CSV manifests and class/person mappings are generated in `data/manifests/`:
+
+```bash
+python -m src.datasets.prepare --config configs/datasets.yaml
+python -m src.datasets.validate --config configs/datasets.yaml
+```
+
+See [dataset mapping and split protocols](../docs/dataset-preparation.md).
+Recognition A/C configs use the VGGFace2 manifests. `faces/` contains team gallery/demo photos and is excluded from training.
+DFEW manifests preserve video clips and official test folds. CelebA manifests match the existing liveness loader, where `live=1` and `spoof=0`.
+Do not commit images, databases, generated manifests or gallery photos.
+
+## Original Drive planning layout
+
 Datasets live in the shared Drive folder `FaceGuard/data/`, not in git. Thành keeps this list up to date.
 
 | Folder on Drive | Task | Source | Notes |
