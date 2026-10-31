@@ -42,3 +42,6 @@ wandb/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+reports/docs/
