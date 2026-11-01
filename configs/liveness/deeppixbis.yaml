@@ -1,0 +1,29 @@
+model: deeppixbis
+pretrained: true
+freeze_blocks: 0
+img_size: 224
+crop_scale: 2.0
+manifest:
+- ../../data/manifests/celeba_liveness.csv
+data_root: ../../data/CelebA_Spoof_processed
+output_dir: ../../checkpoints
+fig_dir: ../../reports/figures
+tag: null
+max_train: null
+max_val: null
+training:
+  epochs: 15
+  batch_size: 32
+  lr: 0.0001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cosine
+  seed: 42
+  device: auto
+  amp: true
+  deterministic: false
+  num_workers: 2
+  monitor: val_acer
+  mode: min
+  patience: 4
+  accumulation_steps: 2

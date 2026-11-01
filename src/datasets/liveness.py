@@ -1,10 +1,14 @@
 """Export the processed CelebA catalog to the existing liveness CSV contract."""
 
-from collections import Counter
+import hashlib
+from collections import Counter, defaultdict
 
+import cv2
 import duckdb
+import numpy as np
 
 from src.liveness.manifest import CELEBA_SPOOF_TYPE, COLUMNS, read_celeba_bbox
+from src.liveness.provenance import checked_path
 
 from .catalog import holdout, ordered_parallel, stable_rng, write_csv, write_json
 from .config import PreparationConfig
@@ -50,17 +54,25 @@ class LivenessPreparer:
 
         def inspect(row):
             relative, subject, split, attack, label = row
-            path = source.root / relative
             try:
+                path = checked_path(source.root, relative)
+                content = path.read_bytes()
+                image = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+                if image is None:
+                    raise ValueError("image cannot be fully decoded")
                 box = read_celeba_bbox(path)
                 if box is None or box[2] <= box[0] or box[3] <= box[1]:
                     raise ValueError("missing or nonpositive face bbox")
+                height, width = image.shape[:2]
+                if box[2] <= 0 or box[3] <= 0 or box[0] >= width or box[1] >= height:
+                    raise ValueError("face bbox does not intersect image")
                 return {
                     "path": relative,
                     "label": label,
                     "attack": attack,
                     "subject": f"celeba_{subject}",
                     "source": "celeba_processed",
+                    "sha256": hashlib.sha256(content).hexdigest(),
                     "split": (
                         "test"
                         if split == "test"
@@ -84,6 +96,30 @@ class LivenessPreparer:
                 rows.append(row)
             if index % 20000 == 0:
                 print(f"liveness: checked {index}/{len(eligible)}", flush=True)
+        by_hash = defaultdict(list)
+        for row in rows:
+            by_hash[row["sha256"]].append(row)
+        rejected_paths = set()
+        for group in by_hash.values():
+            conflict = len({row["label"] for row in group}) > 1
+            keep_split = max(
+                (row["split"] for row in group),
+                key={"train": 0, "val": 1, "test": 2}.get,
+            )
+            for row in group:
+                if conflict or row["split"] != keep_split:
+                    rejected_paths.add(row["path"])
+                    rejected.append(
+                        {
+                            "path": row["path"],
+                            "reason": (
+                                "conflicting_hash_labels"
+                                if conflict
+                                else "cross_split_duplicate_bytes"
+                            ),
+                        }
+                    )
+        rows = [row for row in rows if row["path"] not in rejected_paths]
         subjects = {
             split: {row["subject"] for row in rows if row["split"] == split}
             for split in ("train", "val", "test")
@@ -98,7 +134,7 @@ class LivenessPreparer:
                 raise ValueError(
                     f"liveness {split} requires both live and spoof images"
                 )
-        write_csv(config.output_dir / "celeba_liveness.csv", rows, COLUMNS)
+        write_csv(config.output_dir / "celeba_liveness.csv", rows, COLUMNS + ["sha256"])
         write_csv(
             config.output_dir / "celeba_rejected.csv", rejected, ["path", "reason"]
         )

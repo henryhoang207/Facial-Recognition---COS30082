@@ -112,6 +112,14 @@ class ManifestValidator:
 
     def liveness(self) -> dict:
         records = rows(self.directory / "celeba_liveness.csv")
+        import pandas as pd
+
+        from src.liveness.provenance import audit_images
+
+        audit_images(
+            pd.read_csv(self.directory / "celeba_liveness.csv", dtype={"subject": str}),
+            self.config.liveness.root,
+        )
         disjoint_groups(records, "subject")
         require(
             len({row["path"] for row in records}) == len(records),

@@ -9,6 +9,7 @@ pydantic==2.12.5
 black==26.1.0
 ruff==0.15.7
 pytest==9.0.2
+nbformat==5.11.1
 duckdb==1.4.4
 # OpenCV 5 removed CascadeClassifier, used by the existing liveness detector.
 opencv-python==4.13.0.92

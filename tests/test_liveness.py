@@ -1,4 +1,4 @@
-"""Liveness tests. The pipeline test trains both models for one epoch on tiny random images (CPU, ~1 min)."""
+"""Liveness behavior and one-epoch CPU pipeline tests on random images."""
 
 import subprocess
 import sys
@@ -17,7 +17,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_crop_face_size_and_padding():
     frame = np.full((100, 200, 3), 255, np.uint8)
-    face = crop_face(frame, (150, 10, 190, 50), size=64, scale=2.0)  # crop runs off the top-right edge
+    face = crop_face(
+        frame, (150, 10, 190, 50), size=64, scale=2.0
+    )  # crop runs off the top-right edge
     assert face.shape == (64, 64, 3)
     assert face[0, -1].sum() == 0 and face[32, 32].sum() == 255 * 3
 
@@ -46,7 +48,11 @@ def test_eer_threshold_balances_errors():
     scores = np.r_[rng.normal(0.7, 0.1, 500), rng.normal(0.4, 0.1, 500)]
     t, eer = eer_threshold(scores, labels)
     r = summarize(scores, labels, np.where(labels == 1, "live", "print"), t)
-    assert 0.5 < t < 0.6 and abs(r["apcer"] - r["bpcer"]) < 0.02 and abs(eer - r["acer"]) < 0.02
+    assert (
+        0.5 < t < 0.6
+        and abs(r["apcer"] - r["bpcer"]) < 0.02
+        and abs(eer - r["acer"]) < 0.02
+    )
 
 
 def run(*args):
@@ -61,20 +67,61 @@ def test_pipeline_end_to_end(tmp_path, model):
         for cls in ["live", "print", "replay"]:
             (root / person / cls).mkdir(parents=True)
             for i in range(4):
-                cv2.imwrite(str(root / person / cls / f"{i}.jpg"), rng.integers(0, 255, (80, 80, 3), np.uint8))
+                cv2.imwrite(
+                    str(root / person / cls / f"{i}.jpg"),
+                    rng.integers(0, 255, (80, 80, 3), np.uint8),
+                )
 
     manifest = tmp_path / "data" / "recorded.csv"
-    run("-m", "src.liveness.manifest", "folder", "--root", root, "--data-root", tmp_path / "data",
-        "--detect", "none", "--test-subjects", "p5", "--val-frac", "0.25", "--out", manifest)
+    run(
+        "-m",
+        "src.liveness.manifest",
+        "folder",
+        "--root",
+        root,
+        "--data-root",
+        tmp_path / "data",
+        "--detect",
+        "none",
+        "--test-subjects",
+        "p5",
+        "--val-frac",
+        "0.25",
+        "--out",
+        manifest,
+    )
     df = pd.read_csv(manifest)
     assert set(df[df.split == "test"].subject) == {"p5"}
     assert not set(df[df.split == "train"].subject) & set(df[df.split == "val"].subject)
 
     ckpt_dir, fig_dir = tmp_path / "ckpt", tmp_path / "fig"
-    common = ["--manifest", manifest, "--data-root", tmp_path / "data", "--fig-dir", fig_dir, "--num-workers", "0"]
-    run("-m", "src.liveness.train", "--model", model, "--ckpt-dir", ckpt_dir, "--epochs", "1",
-        "--img-size", "64", "--batch-size", "8", "--no-pretrained", *common)
-    ckpt = next(ckpt_dir.glob(f"liveness_{model}_*.pt"))
+    common = [
+        "--manifest",
+        manifest,
+        "--data-root",
+        tmp_path / "data",
+        "--fig-dir",
+        fig_dir,
+        "--num-workers",
+        "0",
+    ]
+    run(
+        "-m",
+        "src.liveness.train",
+        "--model",
+        model,
+        "--ckpt-dir",
+        ckpt_dir,
+        "--epochs",
+        "1",
+        "--img-size",
+        "64",
+        "--batch-size",
+        "8",
+        "--no-pretrained",
+        *common,
+    )
+    ckpt = next(ckpt_dir.rglob(f"liveness_{model}_*.pt"))
     run("-m", "src.liveness.evaluate", "--checkpoint", ckpt, *common)
 
     table = pd.read_csv(fig_dir / "liveness_results.csv")
@@ -83,6 +130,7 @@ def test_pipeline_end_to_end(tmp_path, model):
         assert (fig_dir / f"liveness_{model}_{kind}.png").exists()
 
     from src.liveness.predictor import LivenessPredictor
+
     liveness = LivenessPredictor(ckpt, device="cpu")
     frame = rng.integers(0, 255, (120, 160, 3), np.uint8)
     label, prob = liveness.predict_frame(frame, (40, 20, 100, 80))
