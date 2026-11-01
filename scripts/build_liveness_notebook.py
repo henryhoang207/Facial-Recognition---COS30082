@@ -41,9 +41,13 @@ markdown("""
     integration are deferred. No trained results are included in this source notebook.
 
     Before starting:
-    1. Upload `faceguard_colab_source.zip` to `My Drive/FaceGuard/` if the feature branch is not on GitHub.
-    2. Add a Drive shortcut to the supplied dataset under `My Drive/FaceGuard/data/`.
+    1. Outputs use the group's [FaceGuard folder](https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX)
+       at `My Drive/COS30082 - Project/AI/FaceGuard`. Other members can add that folder
+       as a shortcut named `FaceGuard` directly under their own My Drive.
+    2. Add a shortcut to the dataset file directly under **My Drive**, keeping its filename
+       `CelebA_Spoof_processed.zip`. This does not copy the 42.7 GB archive.
        [Dataset](https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view).
+       If using the backup source ZIP, place it inside the group's FaceGuard folder.
     3. Use a GPU runtime for training. Archive preparation can run on a CPU runtime to conserve GPU time.
     4. Review the crop grid before enabling the full runs. Allow substantial staging/training time;
        the archive is 42.7 GB and free Colab resources vary.
@@ -54,8 +58,24 @@ code("""
 
     from google.colab import drive
     drive.mount('/content/drive')
-    DRIVE = Path('/content/drive/MyDrive/FaceGuard')
-    ARCHIVE = DRIVE / 'data/CelebA_Spoof_processed.zip'  # edit if your shortcut is elsewhere
+    MY_DRIVE = Path('/content/drive/MyDrive')
+    GROUP_FOLDER_URL = 'https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX'
+    DATASET_URL = 'https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view'
+
+    def resolve_drive_locations(my_drive):
+        group_candidates = [my_drive / 'COS30082 - Project/AI/FaceGuard', my_drive / 'FaceGuard']
+        group = next((path for path in group_candidates if path.is_dir()), None)
+        if group is None:
+            raise FileNotFoundError('Open ' + GROUP_FOLDER_URL + ' and add a shortcut named FaceGuard under My Drive, then rerun this cell.')
+        filename = 'CelebA_Spoof_processed.zip'
+        dataset_candidates = [my_drive / filename, group / 'data' / filename,
+                              group / filename, my_drive / 'FaceGuard/data' / filename]
+        dataset = next((path for path in dataset_candidates if path.is_file()), None)
+        if dataset is None:
+            raise FileNotFoundError('Open ' + DATASET_URL + ' and use Organize > Add shortcut > My Drive, keeping the filename. Do not download or copy the ZIP. Then rerun this cell.')
+        return group, dataset
+
+    DRIVE, ARCHIVE = resolve_drive_locations(MY_DRIVE)
     SOURCE_ZIP = DRIVE / 'faceguard_colab_source.zip'
     REPO = Path('/content/faceguard')
     REPO_URL = 'https://github.com/henryhoang207/Facial-Recognition---COS30082.git'
@@ -86,6 +106,7 @@ code("""
     os.chdir(REPO)
     sys.path.insert(0, str(REPO))
     print('Source:', REPO, '| persistent outputs:', OUT)
+    print('Group folder:', GROUP_FOLDER_URL, '| dataset:', ARCHIVE)
 """)
 markdown("""
     ## Environment

@@ -276,6 +276,35 @@ def test_notebook_is_valid_output_free_and_every_code_cell_compiles():
             compile(cell.source, f"cell-{index}", "exec")
 
 
+@pytest.mark.parametrize("group_path", ["COS30082 - Project/AI/FaceGuard", "FaceGuard"])
+def test_notebook_resolves_group_outputs_and_separate_dataset_shortcut(
+    tmp_path, group_path
+):
+    notebook = nbformat.read(ROOT / "notebooks/liveness_training.ipynb", as_version=4)
+    cell = next(
+        cell for cell in notebook.cells if "def resolve_drive_locations(" in cell.source
+    )
+    function = next(
+        node
+        for node in ast.parse(cell.source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_drive_locations"
+    )
+    namespace = {"GROUP_FOLDER_URL": "group-link", "DATASET_URL": "dataset-link"}
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), "drive-setup", "exec"),
+        namespace,
+    )
+    group = tmp_path / group_path
+    group.mkdir(parents=True)
+    archive = tmp_path / "CelebA_Spoof_processed.zip"
+    with pytest.raises(FileNotFoundError, match="dataset-link"):
+        namespace["resolve_drive_locations"](tmp_path)
+    archive.touch()
+    assert namespace["resolve_drive_locations"](tmp_path) == (group, archive)
+    if group_path != "FaceGuard":
+        assert not (tmp_path / "FaceGuard").exists()
+
+
 def test_yaml_and_legacy_cli_preserve_model_defaults(tmp_path):
     for model in ("mobilenetv3", "deeppixbis"):
         config, resume = load_config(

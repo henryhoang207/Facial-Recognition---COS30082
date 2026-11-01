@@ -8,10 +8,17 @@ are deferred. This repository contains no fabricated training metrics or final w
 
 ## Prepare Drive and run the notebook
 
-1. Upload the supplied `faceguard_colab_source.zip` to `My Drive/FaceGuard/`, or use
-   the `hoan/antispoofing-colab` branch after it has been published to GitHub.
-2. Add a shortcut to [CelebA_Spoof_processed.zip](https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view)
-   under `My Drive/FaceGuard/data/`. Edit `ARCHIVE` in the notebook if necessary.
+1. The notebook uses the group's [FaceGuard folder](https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX)
+   at `My Drive/COS30082 - Project/AI/FaceGuard`. Other members can add a shortcut
+   to that folder named `FaceGuard` directly under their own My Drive. The
+   notebook checks the existing group location first and never creates a separate
+   personal FaceGuard folder when the group folder cannot be found.
+2. Open [CelebA_Spoof_processed.zip](https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view)
+   and use **Organize > Add shortcut > My Drive**, retaining its filename. This
+   makes the existing ZIP accessible to Colab without copying it. The notebook
+   also accepts an existing shortcut under the group's `data/` folder or the
+   FaceGuard folder itself. The published branch supplies the code; if using
+   `faceguard_colab_source.zip` instead, place it in the group's FaceGuard folder.
 3. Run setup, archive staging and manifest preparation. These stages may run on
    a CPU runtime to conserve free GPU quota. They require substantial disk and I/O.
 4. Inspect the crop grid and exclusion log. Set `CROPS_REVIEWED=True` only after
