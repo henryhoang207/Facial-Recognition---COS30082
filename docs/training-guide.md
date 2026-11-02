@@ -2,7 +2,7 @@
 
 Use this guide to install the training environment, define a YAML configuration, run a training task, and resume it. All commands run from the repository root.
 
-The shared API is in `src/training/`. Recognition A and C use it through their own command-line entry point. Other task owners supply a `TrainingTask` and data loaders. The existing liveness command keeps its separate training loop.
+The shared API is in `src/training/`. Recognition A and C use it through their command-line entry point in `src/recognition/classification/`. B0/B1 use the same `Trainer.fit`, `TrainingTask`, and checkpoint schema through their notebook workflow in `src/recognition/verification/`. They retain their own `ExperimentConfig`, sampling, and evaluation protocol. Other task owners supply a task and data loaders; the existing liveness command retains its own loop. See the [recognition package map](../src/recognition/README.md) and [notebook guide](../notebooks/metrics-learn/RECOGNITION.md).
 
 ## Set up the environment
 
@@ -52,13 +52,13 @@ To regenerate the training lock after an intentional dependency change, run:
 uv pip compile requirements/training.in --universal --python-version 3.12 --torch-backend cu130 --emit-index-url --emit-find-links --output-file requirements/training-cu130.lock.txt
 ```
 
-Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/main-cu130/`. Run their isolated software check with:
+Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/main-cu130-shared-trainer/`. Run their isolated software check with:
 
 ```powershell
 .venv/Scripts/python.exe scripts/smoke_recognition_notebooks.py --kernel mtrlearn
 ```
 
-The smoke command requires a shared Python 3.12-3.14/CUDA 13.0 kernel (the standard Windows setup uses Python 3.14) and creates a fresh directory under `artifacts/smoke-main-cu130/`. Executed notebooks go in its `notebooks/` directory and bounded training outputs go in `smoke/`. Data manifests remain shared under `artifacts/shared/manifests/`. Its metrics are not model-quality results. Metric-learning runs record environment versions and reject reuse or resume under a different recorded runtime; keep earlier CUDA 12.8 artifacts separate. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for the full flow.
+The smoke command requires a shared Python 3.12-3.14/CUDA 13.0 kernel (the standard Windows setup uses Python 3.14) and creates a fresh directory under `artifacts/smoke-main-cu130/`. Executed notebooks go in its `notebooks/` directory and bounded training outputs go in `smoke/`. Data manifests remain shared under `artifacts/shared/manifests/`. Its metrics are not model-quality results. Metric-learning runs record environment versions and reject reuse or resume under a different recorded runtime or training contract. Earlier private-loop metric checkpoints are not migrated automatically and remain untouched. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for the full flow.
 
 ## Check the shared trainer with the example
 
@@ -262,6 +262,8 @@ Use `last.pt` for resume. Each resumed run gets a new output directory. Model st
 
 Resume occurs after completed epochs. The trainer flushes accumulated gradients before it saves the checkpoint. Custom stateful samplers, distributed training, and recovery partway through a batch are outside the current contract.
 
+B0/B1 use the same version-1 checkpoint envelope and retain notebook-specific metadata. Their `last.pt` contains `task`, optimizer/scaler state, shared `training_config`, experiment `metadata`, RNG, loader RNG, and optional policy state. Their `best.pt` is an inference checkpoint; `embedding.pt` is an inference export containing only encoder weights under `task`. A/C and B0/B1 require their respective architecture loaders despite sharing the envelope. The notebook orchestrator gives every fit/resume invocation a unique `trainer_runs/` session and publishes stable `weights/` paths after a successful fit.
+
 ## Integrate another task
 
 Implement one `TrainingTask` that owns the model and every trainable loss component. Its `step(batch)` returns:
@@ -269,12 +271,15 @@ Implement one `TrainingTask` that owns the model and every trainable loss compon
 - A scalar mean loss that retains its graph during training.
 - `weight`, the number of samples or other units represented by that mean.
 - Optional `MetricTotal(total, count)` values for metrics that can be aggregated.
+- `optimize=False` for valid batches without a training signal; metrics are still recorded and optimizer state is not advanced for that batch.
 
 The trainer owns backward, AMP, clipping, accumulation, optimizer updates, scheduling, stopping, and checkpoint state. A task must not perform those operations itself.
 
 Call `seed_everything` before creating the model and loaders. Move the task to its device before creating the optimizer. Build the optimizer and scheduler with the shared factories, then call `Trainer.fit`. Use explicit loader generators, `seed_worker`, and nonpersistent workers for reproducible epoch-boundary resume. The [runnable example](../examples/shared_training.py) shows the complete sequence.
 
 Supply an evaluator callback for metrics such as AUC that require the whole validation set. It receives `(task, device)` and returns named finite metrics. Do not average AUC across batches. Task packages own their dataset formats, sampling, inference interfaces, and evaluation protocol.
+
+An optional `TrainingPolicy` supplies experiment-specific epoch/batch hooks, selection, stopping, and serializable policy state. It can adjust learning rates and annotate history while the trainer retains backward, AMP, clipping, updates, and checkpoint writes. B0/B1 use this extension to preserve their existing learning-rate schedule, TAR/AUC selection, and minimum semi-hard training budget. `ExperimentConfig.trainer_config(seed)` adapts notebook settings to the engine without replacing the experiment configuration with A/C YAML.
 
 ## Run checks
 

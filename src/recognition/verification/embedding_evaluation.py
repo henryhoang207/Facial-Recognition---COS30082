@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -93,12 +93,20 @@ def extract_embeddings(
                 images = batch["image"].to(device, non_blocking=device.type == "cuda")
                 features = model(images).float()
                 if features.ndim != 2 or features.shape[0] != images.shape[0]:
-                    raise ValueError("The encoder must return a [batch, dimension] tensor.")
+                    raise ValueError(
+                        "The encoder must return a [batch, dimension] tensor."
+                    )
                 norms = torch.linalg.vector_norm(features, dim=1, keepdim=True)
                 if not torch.isfinite(features).all() or torch.any(norms <= 1e-12):
-                    raise ValueError("The encoder produced a non-finite or zero embedding.")
-                features = (features / norms).cpu().numpy().astype(np.float32, copy=False)
-                embeddings.update(zip(map(str, batch["rel_path"]), features, strict=True))
+                    raise ValueError(
+                        "The encoder produced a non-finite or zero embedding."
+                    )
+                features = (
+                    (features / norms).cpu().numpy().astype(np.float32, copy=False)
+                )
+                embeddings.update(
+                    zip(map(str, batch["rel_path"]), features, strict=True)
+                )
     finally:
         # Restore mixed modes too, such as frozen BatchNorm inside a train-mode model.
         for module, training in modes:
@@ -115,15 +123,18 @@ def pair_scores(
         raise ValueError("A nonempty pair manifest needs path_a, path_b, and is_same.")
     labels = _labels(pairs["is_same"])
     if {"identity_a", "identity_b"}.issubset(pairs.columns):
-        same_identity = pairs["identity_a"].astype(str).to_numpy() == pairs[
-            "identity_b"
-        ].astype(str).to_numpy()
+        same_identity = (
+            pairs["identity_a"].astype(str).to_numpy()
+            == pairs["identity_b"].astype(str).to_numpy()
+        )
         if not np.array_equal(labels, same_identity):
             raise ValueError("Pair labels disagree with identity_a/identity_b.")
     paths = set(pairs["path_a"].astype(str)) | set(pairs["path_b"].astype(str))
     missing = paths.difference(embeddings)
     if missing:
-        raise KeyError(f"Missing embeddings for {len(missing)} paths; first: {min(missing)}")
+        raise KeyError(
+            f"Missing embeddings for {len(missing)} paths; first: {min(missing)}"
+        )
     unit = {path: _unit_vector(embeddings[path]) for path in paths}
     scores = [
         float(np.dot(unit[str(a)], unit[str(b)]))
@@ -139,7 +150,9 @@ def _operating_curve(
     scores = np.asarray(scores, dtype=np.float64)
     labels = np.asarray(labels, dtype=bool)
     if scores.ndim != 1 or len(scores) != len(labels) or not np.isfinite(scores).all():
-        raise ValueError("Scores and labels must be matching finite one-dimensional arrays.")
+        raise ValueError(
+            "Scores and labels must be matching finite one-dimensional arrays."
+        )
     positives, negatives = int(labels.sum()), int((~labels).sum())
     if not positives or not negatives:
         raise ValueError("Evaluation requires both genuine and impostor observations.")
@@ -217,7 +230,9 @@ def verification_metrics(
         "fmr": float(accepted[~labels].mean()),
         "tar": float(accepted[labels].mean()),
         "threshold": tau,
-        "threshold_source": "calibrated_on_supplied_pairs" if threshold is None else "fixed",
+        "threshold_source": (
+            "calibrated_on_supplied_pairs" if threshold is None else "fixed"
+        ),
         "genuine_pairs": int(labels.sum()),
         "impostor_pairs": int((~labels).sum()),
     }
@@ -235,18 +250,31 @@ def evaluate_probe(
     """Measure the fixed train-only curriculum probe without changing model state."""
     columns = ["anchor", "positive", "negative"]
     if not set(columns).issubset(probe_triplets.columns) or probe_triplets.empty:
-        raise ValueError("Probe triplets need nonempty anchor/positive/negative columns.")
+        raise ValueError(
+            "Probe triplets need nonempty anchor/positive/negative columns."
+        )
     paths = set(probe_triplets[columns].astype(str).to_numpy().ravel())
     known = train_frame.drop_duplicates("rel_path").set_index("rel_path", drop=False)
     if not paths.issubset(known.index):
-        raise ValueError("All curriculum probe images must belong to the training manifest.")
-    for anchor, positive, negative in probe_triplets[columns].itertuples(index=False, name=None):
-        if anchor == positive or known.loc[anchor, "identity_id"] != known.loc[positive, "identity_id"]:
-            raise ValueError("Probe anchor/positive must be different images of the same identity.")
+        raise ValueError(
+            "All curriculum probe images must belong to the training manifest."
+        )
+    for anchor, positive, negative in probe_triplets[columns].itertuples(
+        index=False, name=None
+    ):
+        if (
+            anchor == positive
+            or known.loc[anchor, "identity_id"] != known.loc[positive, "identity_id"]
+        ):
+            raise ValueError(
+                "Probe anchor/positive must be different images of the same identity."
+            )
         if known.loc[anchor, "identity_id"] == known.loc[negative, "identity_id"]:
             raise ValueError("Probe negatives must have a different identity.")
     selected = known.loc[sorted(paths)].reset_index(drop=True)
-    embeddings = extract_embeddings(model, selected, data_root, device, batch_size, num_workers)
+    embeddings = extract_embeddings(
+        model, selected, data_root, device, batch_size, num_workers
+    )
     anchors = np.stack([embeddings[str(p)] for p in probe_triplets["anchor"]])
     positives = np.stack([embeddings[str(p)] for p in probe_triplets["positive"]])
     negatives = np.stack([embeddings[str(p)] for p in probe_triplets["negative"]])
@@ -283,18 +311,25 @@ def create_open_set_manifest(
         group = group.sort_values("rel_path")
         # Existing manifests deduplicate exact files; preserve any supplied group too.
         group_column = next(
-            (column for column in ("duplicate_group", "sha256") if column in group), None
+            (column for column in ("duplicate_group", "sha256") if column in group),
+            None,
         )
         candidates = group.drop_duplicates(group_column) if group_column else group
         if identity in selected:
             if len(candidates) <= enrollment:
-                raise ValueError(f"Identity {identity} needs enrollment images and a genuine probe.")
-            chosen = candidates.iloc[rng.choice(len(candidates), enrollment, replace=False)]
+                raise ValueError(
+                    f"Identity {identity} needs enrollment images and a genuine probe."
+                )
+            chosen = candidates.iloc[
+                rng.choice(len(candidates), enrollment, replace=False)
+            ]
             paths = sorted(chosen["rel_path"].tolist())
             gallery.append({"identity_id": identity, "paths": paths})
             remaining = group[~group["rel_path"].isin(paths)]
             if group_column:
-                remaining = remaining[~remaining[group_column].isin(chosen[group_column])]
+                remaining = remaining[
+                    ~remaining[group_column].isin(chosen[group_column])
+                ]
         else:
             remaining = group
         probes.extend(
@@ -333,7 +368,9 @@ def evaluate_identification(
         raise ValueError("Enrollment images must never also be probes.")
     templates = np.stack(
         [
-            _unit_vector(np.mean([_unit_vector(embeddings[p]) for p in item["paths"]], axis=0))
+            _unit_vector(
+                np.mean([_unit_vector(embeddings[p]) for p in item["paths"]], axis=0)
+            )
             for item in protocol["gallery"]
         ]
     )
@@ -347,7 +384,9 @@ def evaluate_identification(
     # Chunk score matrices so evaluation does not grow with all probes times gallery.
     for start in range(0, len(probes), 2048):
         chunk = probes[start : start + 2048]
-        vectors = np.stack([_unit_vector(embeddings[str(item["rel_path"])]) for item in chunk])
+        vectors = np.stack(
+            [_unit_vector(embeddings[str(item["rel_path"])]) for item in chunk]
+        )
         scores = np.clip(vectors @ templates.T, -1.0, 1.0)
         winners = scores.argmax(axis=1)
         best_scores.extend(scores[np.arange(len(chunk)), winners].tolist())
@@ -369,11 +408,15 @@ def evaluate_identification(
         "dir": tpir,
         "fpir": float(accepted[~known].mean()),
         "threshold": tau,
-        "threshold_source": "calibrated_on_supplied_probes" if threshold is None else "fixed",
+        "threshold_source": (
+            "calibrated_on_supplied_probes" if threshold is None else "fixed"
+        ),
         "target_fpir": float(target_fpir),
         "tpir_at_fpir": float(curve["tar"][index]),
         "enrolled_identities": int(len(identities)),
-        "unknown_identities": int(len({str(p["identity_id"]) for p in probes if not p["is_enrolled"]})),
+        "unknown_identities": int(
+            len({str(p["identity_id"]) for p in probes if not p["is_enrolled"]})
+        ),
         "enrollment_images": int(len(gallery_paths)),
         "genuine_probes": int(known.sum()),
         "unknown_probes": int((~known).sum()),
@@ -393,7 +436,9 @@ def _save_figure(figure, output_path: str | Path) -> str:
     return str(path)
 
 
-def save_training_graph(history: pd.DataFrame | str | Path, output_path: str | Path) -> str:
+def save_training_graph(
+    history: pd.DataFrame | str | Path, output_path: str | Path
+) -> str:
     """Save complete loss and dev curves without requiring an interactive backend."""
     from matplotlib.figure import Figure
 
@@ -413,14 +458,22 @@ def save_training_graph(history: pd.DataFrame | str | Path, output_path: str | P
         if column is not None:
             axis.plot(x, history[column], marker=".", linewidth=1.4)
         else:
-            axis.text(0.5, 0.5, "Metric not recorded", transform=axis.transAxes, ha="center")
+            axis.text(
+                0.5, 0.5, "Metric not recorded", transform=axis.transAxes, ha="center"
+            )
         axis.set_ylabel(title)
         axis.grid(alpha=0.25)
         stage_column = "strategy" if "strategy" in history else "stage"
         if stage_column in history:
-            switched = history[stage_column].astype(str).ne(history[stage_column].astype(str).shift())
+            switched = (
+                history[stage_column]
+                .astype(str)
+                .ne(history[stage_column].astype(str).shift())
+            )
             for position in np.flatnonzero(switched.to_numpy())[1:]:
-                axis.axvline(np.asarray(x)[position], color="gray", linestyle="--", alpha=0.6)
+                axis.axvline(
+                    np.asarray(x)[position], color="gray", linestyle="--", alpha=0.6
+                )
     axes[-1].set_xlabel("Epoch")
     figure.tight_layout()
     return _save_figure(figure, output_path)
@@ -444,9 +497,23 @@ def save_verification_graphs(
     figure = Figure(figsize=(7, 5))
     axis = figure.subplots()
     minimum = min(1.0 / metrics["impostor_pairs"], max(target_fmr / 10, 1e-8))
-    axis.semilogx(np.maximum(curve["fmr"], minimum), curve["tar"], label=f"AUC={metrics['auc']:.4f}")
-    axis.scatter(max(metrics["fmr"], minimum), metrics["tar"], label="Operating threshold", zorder=3)
-    axis.set(xlabel="False match rate (FMR)", ylabel="True accept rate (TAR)", xlim=(minimum, 1), ylim=(0, 1.01))
+    axis.semilogx(
+        np.maximum(curve["fmr"], minimum),
+        curve["tar"],
+        label=f"AUC={metrics['auc']:.4f}",
+    )
+    axis.scatter(
+        max(metrics["fmr"], minimum),
+        metrics["tar"],
+        label="Operating threshold",
+        zorder=3,
+    )
+    axis.set(
+        xlabel="False match rate (FMR)",
+        ylabel="True accept rate (TAR)",
+        xlim=(minimum, 1),
+        ylim=(0, 1.01),
+    )
     axis.grid(alpha=0.25)
     axis.legend()
     roc_path = _save_figure(figure, output_dir / "roc.png")
@@ -455,13 +522,22 @@ def save_verification_graphs(
     bins = np.linspace(-1, 1, 61)
     axis.hist(scores[~labels], bins=bins, density=True, alpha=0.55, label="Impostor")
     axis.hist(scores[labels], bins=bins, density=True, alpha=0.55, label="Genuine")
-    axis.axvline(metrics["threshold"], linestyle="--", color="black", label="Operating threshold")
+    axis.axvline(
+        metrics["threshold"], linestyle="--", color="black", label="Operating threshold"
+    )
     axis.set(xlabel="Cosine similarity", ylabel="Density")
     axis.legend()
     distribution_path = _save_figure(figure, output_dir / "score_distribution.png")
     metrics_path = output_dir / "verification_metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    return {"metrics": metrics, "roc": roc_path, "score_distribution": distribution_path, "metrics_path": str(metrics_path)}
+    metrics_path.write_text(
+        json.dumps(metrics, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    return {
+        "metrics": metrics,
+        "roc": roc_path,
+        "score_distribution": distribution_path,
+        "metrics_path": str(metrics_path),
+    }
 
 
 def plot_sweep(sweep: pd.DataFrame | str | Path, output_path: str | Path) -> str:
@@ -474,26 +550,53 @@ def plot_sweep(sweep: pd.DataFrame | str | Path, output_path: str | Path) -> str
     if sweep.empty or "margin" not in sweep:
         raise ValueError("A nonempty sweep needs a margin column.")
     metric = next(
-        (name for name in ("dev_tar_at_fmr", "best_dev_tar_at_fmr", "dev_tar") if name in sweep), None
+        (
+            name
+            for name in ("dev_tar_at_fmr", "best_dev_tar_at_fmr", "dev_tar")
+            if name in sweep
+        ),
+        None,
     )
     if metric is None:
         raise ValueError("The sweep needs a dev TAR column.")
-    family = next((name for name in ("family", "objective", "model", "method") if name in sweep), None)
-    groups = list(sweep.groupby(family, sort=True)) if family else [("Configurations", sweep)]
+    family = next(
+        (name for name in ("family", "objective", "model", "method") if name in sweep),
+        None,
+    )
+    groups = (
+        list(sweep.groupby(family, sort=True))
+        if family
+        else [("Configurations", sweep)]
+    )
     figure = Figure(figsize=(6 * len(groups), 5))
     axes = np.atleast_1d(figure.subplots(1, len(groups)))
     for axis, (name, group) in zip(axes, groups, strict=True):
         summary = group.groupby("margin")[metric].agg(["mean", "std"]).sort_index()
-        axis.errorbar(summary.index, summary["mean"], yerr=summary["std"].fillna(0), marker="o", capsize=4)
-        axis.set(title=str(name), xlabel="Margin (objective-specific units)", ylabel="Dev TAR at target FMR")
+        axis.errorbar(
+            summary.index,
+            summary["mean"],
+            yerr=summary["std"].fillna(0),
+            marker="o",
+            capsize=4,
+        )
+        axis.set(
+            title=str(name),
+            xlabel="Margin (objective-specific units)",
+            ylabel="Dev TAR at target FMR",
+        )
         axis.grid(alpha=0.25)
     figure.tight_layout()
     return _save_figure(figure, output_path)
 
 
-def subject_bootstrap_ci(embeddings, pairs: pd.DataFrame, threshold: float,
-                         n_bootstrap: int = 2000, confidence: float = 0.95,
-                         seed: int = 42) -> dict:
+def subject_bootstrap_ci(
+    embeddings,
+    pairs: pd.DataFrame,
+    threshold: float,
+    n_bootstrap: int = 2000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> dict:
     """Bootstrap identity clusters at a fixed operating threshold.
 
     Genuine comparisons receive the resampled subject weight; impostors receive
@@ -510,7 +613,11 @@ def subject_bootstrap_ci(embeddings, pairs: pd.DataFrame, threshold: float,
     lookup = {identity: index for index, identity in enumerate(identities)}
     frame = pairs[["identity_a", "identity_b"]].copy()
     frame["accepted"] = scores >= threshold
-    grouped = frame.groupby(["identity_a", "identity_b"]).accepted.agg(["sum", "size"]).reset_index()
+    grouped = (
+        frame.groupby(["identity_a", "identity_b"])
+        .accepted.agg(["sum", "size"])
+        .reset_index()
+    )
     first = grouped.identity_a.map(lookup).to_numpy()
     second = grouped.identity_b.map(lookup).to_numpy()
     genuine = first == second
@@ -518,21 +625,47 @@ def subject_bootstrap_ci(embeddings, pairs: pd.DataFrame, threshold: float,
     rng = np.random.default_rng(seed)
     samples = []
     for _ in range(n_bootstrap):
-        weights = rng.multinomial(len(identities), np.full(len(identities), 1/len(identities)))
-        pair_weight = np.where(genuine, weights[first], weights[first] * weights[second])
-        denominator = [np.dot(pair_weight[mask], counts[mask]) for mask in (genuine, ~genuine)]
+        weights = rng.multinomial(
+            len(identities), np.full(len(identities), 1 / len(identities))
+        )
+        pair_weight = np.where(
+            genuine, weights[first], weights[first] * weights[second]
+        )
+        denominator = [
+            np.dot(pair_weight[mask], counts[mask]) for mask in (genuine, ~genuine)
+        ]
         if min(denominator) == 0:
             continue
-        samples.append([np.dot(pair_weight[mask], accepted[mask])/total
-                        for mask, total in zip((genuine, ~genuine), denominator)])
+        samples.append(
+            [
+                np.dot(pair_weight[mask], accepted[mask]) / total
+                for mask, total in zip((genuine, ~genuine), denominator, strict=True)
+            ]
+        )
     if len(samples) < 2:
         raise ValueError("Insufficient valid subject-bootstrap replicates.")
-    alpha = (1-confidence)/2
-    bounds = np.quantile(np.asarray(samples), [alpha, 1-alpha], axis=0)
+    alpha = (1 - confidence) / 2
+    bounds = np.quantile(np.asarray(samples), [alpha, 1 - alpha], axis=0)
     operating = scores >= threshold
-    return {"confidence": confidence, "requested_replicates": n_bootstrap,
-            "valid_replicates": len(samples), "seed": seed, "fixed_threshold": float(threshold),
-            "identity_count": len(identities),
-            "tar": {"estimate": float(operating[labels].mean()), "lower": float(bounds[0, 0]), "upper": float(bounds[1, 0])},
-            "fmr": {"estimate": float(operating[~labels].mean()), "lower": float(bounds[0, 1]), "upper": float(bounds[1, 1])},
-            "method": "identity resampling with multiplicative impostor endpoint weights; threshold not recalibrated"}
+    return {
+        "confidence": confidence,
+        "requested_replicates": n_bootstrap,
+        "valid_replicates": len(samples),
+        "seed": seed,
+        "fixed_threshold": float(threshold),
+        "identity_count": len(identities),
+        "tar": {
+            "estimate": float(operating[labels].mean()),
+            "lower": float(bounds[0, 0]),
+            "upper": float(bounds[1, 0]),
+        },
+        "fmr": {
+            "estimate": float(operating[~labels].mean()),
+            "lower": float(bounds[0, 1]),
+            "upper": float(bounds[1, 1]),
+        },
+        "method": (
+            "identity resampling with multiplicative impostor endpoint weights; "
+            "threshold not recalibrated"
+        ),
+    }

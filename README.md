@@ -30,7 +30,7 @@ Attendance is only logged when the face is recognised **and** live.
 app/                 web app (webcam, registration, attendance log)
 notebooks/           training notebooks, one per model; start from 00_template.ipynb
 src/common/          face crop, data loaders, shared model interfaces
-src/recognition/     face embedding models (Model A, Model B) + verification eval
+src/recognition/     classification/ (A/C) and verification/ (B0/B1 + pair evaluation)
 src/liveness/        anti-spoofing model
 src/emotion/         emotion model
 reports/figures/     result tables and plots used in the report
@@ -96,12 +96,12 @@ Task-specific commands are listed below.
 
 Gia Khánh: Model A (ResNet-18 + cross-entropy), Model C (ArcFace), and shared verification evaluation.
 See [training, YAML configuration, inference and ROC/AUC](docs/recognition-training.md).
-The reusable loop is in `src/training/`; A/C are isolated in `src/recognition/classification/`.
+The reusable loop is in `src/training/`; A/C are isolated in `src/recognition/classification/`. See the [recognition package map](src/recognition/README.md) for module responsibilities.
 Local dataset manifests are connected; real-data accuracy, AUC and CPU latency are pending full training and evaluation.
 
 ### Face recognition: Model B (triplet loss)
 
-Run [triplet_loss.ipynb](notebooks/metrics-learn/triplet_loss.ipynb) for B0 or [arcface.ipynb](notebooks/metrics-learn/arcface.ipynb) for B1 using the shared CUDA kernel. Both train an iResNet-34 encoder from random initialization and export normalized 256-dimensional embeddings. See the [metric-learning notebook guide](notebooks/metrics-learn/RECOGNITION.md) for margin sweeps, artifacts, resume rules, and bounded GPU smoke tests. These notebook experiments have their own training and evaluation protocol, separate from the A/C classification CLI above.
+Run [triplet_loss.ipynb](notebooks/metrics-learn/triplet_loss.ipynb) for B0 or [arcface.ipynb](notebooks/metrics-learn/arcface.ipynb) for B1 using the shared CUDA kernel. Both train an iResNet-34 encoder from random initialization and export normalized 256-dimensional embeddings. Their implementation is in `src/recognition/verification/`, with `MetricLearningTask` using the same `Trainer.fit` and checkpoint schema as A/C. The notebooks keep their own `ExperimentConfig`, P-by-K sampling, mining, sweeps, and identity-disjoint evaluation protocol. New outputs default to `artifacts/main-cu130-shared-trainer/`; existing private-loop artifacts remain untouched. See the [metric-learning notebook guide](notebooks/metrics-learn/RECOGNITION.md) for artifacts, resume rules, inference, and bounded GPU smoke tests.
 
 ### Anti-spoofing
 

@@ -1,10 +1,24 @@
-"""Shared, explicit settings for the two recognition experiments."""
+"""Settings for metric-learning experiments and shared pair verification."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+
+from pydantic import Field
+
+from src.training.config import Settings, TrainingConfig
+
+
+class VerificationConfig(Settings):
+    """Pair-based verification settings shared by classifiers and embedders."""
+
+    root: Path
+    pairs: Path
+    pairs_format: Literal["whitespace", "csv"]
+    target_fpr: float = Field(ge=0, lt=1)
+    selection_metric: Literal["cosine", "euclidean"]
 
 
 @dataclass
@@ -59,7 +73,9 @@ class ExperimentConfig:
         if self.method not in {"triplet", "arcface"}:
             raise ValueError("method must be 'triplet' or 'arcface'.")
         if self.embedding_dim != 256:
-            raise ValueError("The controlled experiment requires 256-dimensional embeddings.")
+            raise ValueError(
+                "The controlled experiment requires 256-dimensional embeddings."
+            )
         if self.identities_per_batch < 2 or self.images_per_identity < 2:
             raise ValueError("P and K must each be at least two.")
         if self.epochs < 1 or self.patience < 1 or self.num_workers < 0:
@@ -75,3 +91,30 @@ class ExperimentConfig:
         result["artifacts_root"] = str(Path(self.artifacts_root).resolve())
         result["confirmation_seeds"] = list(self.confirmation_seeds)
         return result
+
+    def trainer_config(self, seed: int) -> TrainingConfig:
+        """Adapt notebook settings to the shared engine without changing this API.
+
+        The experiment policy owns the original per-batch learning-rate schedule
+        and curriculum-aware stopping. No epoch scheduler is attached to Trainer.
+        """
+        self.validate()
+        return TrainingConfig(
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+            optimizer="adamw",
+            scheduler="none",
+            warmup_epochs=min(self.warmup_epochs, self.epochs - 1),
+            seed=seed,
+            device=self.device,
+            amp=self.amp,
+            deterministic=True,
+            num_workers=self.num_workers,
+            monitor="dev_tar",
+            mode="max",
+            patience=self.patience,
+            early_stopping_start_epoch=1,
+            clip_grad_norm=self.gradient_clip,
+        )

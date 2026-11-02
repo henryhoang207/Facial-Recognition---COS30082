@@ -38,12 +38,12 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from IPython.display import display, Image as DisplayImage
-from src.recognition.config import ExperimentConfig
-from src.recognition.data import prepare_manifests, FaceDataset, PKBatchSampler, make_loader
-from src.recognition.models import IResNet34
-from src.recognition.losses import TripletMetricLoss, ArcFaceHead
-from src.recognition.training import configure_runtime, run_sweep, evaluate_selected
-from src.recognition.notebook_utils import processing_preview, pilot_runtime, smoke_prepared, smoke_config
+from src.recognition.verification.config import ExperimentConfig
+from src.recognition.verification.data import prepare_manifests, FaceDataset, PKBatchSampler, make_loader
+from src.recognition.verification.models import IResNet34
+from src.recognition.verification.losses import TripletMetricLoss, ArcFaceHead
+from src.recognition.verification.training import configure_runtime, run_sweep, evaluate_selected
+from src.recognition.verification.notebook_utils import processing_preview, pilot_runtime, smoke_prepared, smoke_config
 
 print("Python:", sys.executable)
 print("PyTorch:", torch.__version__, "CUDA runtime:", torch.version.cuda)
@@ -52,7 +52,7 @@ if not torch.cuda.is_available():
 print("GPU:", torch.cuda.get_device_name(0))'''),
         code(f'''SMOKE_TEST = os.environ.get("MTRLEARN_SMOKE", "0") == "1"
 RUN_FINAL_TEST = False  # Enable only after the margin-selection design is fixed.
-ARTIFACTS_ROOT = Path(os.environ.get("MTRLEARN_ARTIFACTS_ROOT", str(ROOT / "artifacts" / "main-cu130")))
+ARTIFACTS_ROOT = Path(os.environ.get("MTRLEARN_ARTIFACTS_ROOT", str(ROOT / "artifacts" / "main-cu130-shared-trainer")))
 if not ARTIFACTS_ROOT.is_absolute():
     ARTIFACTS_ROOT = ROOT / ARTIFACTS_ROOT
 ARTIFACTS_ROOT = ARTIFACTS_ROOT.resolve()
@@ -108,9 +108,11 @@ print("Normalized range:", float(batch["image"].min()), float(batch["image"].max
 print("Images per identity:", torch.unique(batch["label"], return_counts=True)[1].tolist())
 del batch'''),
         markdown("## 3. Model and objective\n\n"
-                 "The reusable source is in `src/recognition/models.py` and `losses.py`. "
+                 "The reusable source is in `src/recognition/verification/models.py` and `losses.py`. "
                  "The model uses iResNet stages [3,4,6,3], a 256-feature linear layer and final BatchNorm, "
-                 "followed by explicit FP32 L2 normalization. Each margin run starts from the same encoder initialization for its seed."),
+                 "followed by explicit FP32 L2 normalization. Each margin run starts from the same encoder initialization for its seed. "
+                 "`MetricLearningTask` uses the same `Trainer.fit` engine as A/C; the backbone and loss are unchanged. "
+                 "The notebook retains `ExperimentConfig`, with shared engine settings adapted by `trainer_config(seed)`."),
         code('''model = IResNet34(embedding_dim=256)
 print(model)
 print("Total encoder parameters:", f"{sum(p.numel() for p in model.parameters()):,}")
@@ -150,17 +152,20 @@ display(pd.Series(json.loads((Path(CONFIG.artifacts_root) / "shared" / "runtime_
         markdown("## 5. Model training and margin sweep\n\n"
                  "AdamW peak LR 3e-4, five-epoch warmup, cosine decay, maximum 60 epochs and dev-only early stopping. "
                  "Three margins are screened at seed 42; the selected margin is repeated at seeds 123 and 2026. "
-                 "Completed runs are reused; interrupted runs resume at the last completed epoch. "
-                 "The default artifact root is `artifacts/main-cu130/`; set `MTRLEARN_ARTIFACTS_ROOT` before launching "
-                 "the kernel to choose another root. Existing CUDA 12.8 runs remain separate. "
-                 "Change the artifact root when changing scientific settings; mismatched resume configurations are rejected. "
+                 "The shared trainer owns backward, AMP, clipping, and optimizer updates; a training policy preserves the experiment rules. "
+                 "Completed matching runs are reused; interruptions resume from the latest session's complete `last.pt` epoch. "
+                 "The default artifact root is `artifacts/main-cu130-shared-trainer/`; set `MTRLEARN_ARTIFACTS_ROOT` before launching "
+                 "the kernel to choose another root. Existing private-loop checkpoints remain untouched and are not automatically resumed. "
+                 "Change the artifact root when changing scientific settings; incompatible training contracts are rejected. "
                  "The final test is not used during this cell."),
         code('''sweep_val = run_sweep(CONFIG, prepared)
 display(sweep_val[["method", "margin", "seed", "stage", "best_epoch", "dev_tar", "dev_auc", "dev_eer"]])
 print("Saved sweep:", CONFIG.output_dir / "sweep_val.csv")'''),
         markdown("## 6. Loss graphs and saved artifacts\n\n"
-                 "Each run saves `history.csv`, loss/verification graphs, resumable `best.pt` and `last.pt`, "
-                 "and a standalone `embedding.pt` with transform metadata and a dev-calibrated threshold. "
+                 "Each run saves `history.csv`, loss/verification graphs, common-schema inference `best.pt`, "
+                 "resumable training `last.pt`, and encoder-only inference `embedding.pt` with preprocessing metadata and a dev threshold. "
+                 "Only `last.pt` is resumable. Each fit/resume call has a unique `trainer_runs/` session; stable `weights/` files are published after success. "
+                 "`MetricEmbedder` loads `best.pt` or `embedding.pt` for the shared `embed(face)` interface. "
                  "The experiment folder saves `sweep_val.csv`, `selection.json` and the margin-comparison graph. "
                  "Smoke-test outputs must never be reported as trained-model performance."),
         code('''display(DisplayImage(filename=str(CONFIG.output_dir / "graphs" / "sweep_val.png")))

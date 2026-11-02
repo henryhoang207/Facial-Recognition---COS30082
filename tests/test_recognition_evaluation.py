@@ -9,7 +9,7 @@ import pytest
 import torch
 from PIL import Image
 
-from src.recognition.evaluation import (
+from src.recognition.verification.embedding_evaluation import (
     create_open_set_manifest,
     evaluate_identification,
     evaluate_probe,

@@ -6,8 +6,8 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from src.recognition.losses import ArcFaceHead, CurriculumGate, TripletMetricLoss
-from src.recognition.models import IResNet34
+from src.recognition.verification.losses import ArcFaceHead, CurriculumGate, TripletMetricLoss
+from src.recognition.verification.models import IResNet34
 
 
 def test_triplet_uses_squared_distances_and_all_directed_positives():

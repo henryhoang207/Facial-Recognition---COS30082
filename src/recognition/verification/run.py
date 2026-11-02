@@ -15,7 +15,8 @@ from pydantic import Field
 from src.training.config import Settings, override_config, read_yaml
 from src.training.trainer import new_run_dir
 
-from .evaluator import PairEvaluator, VerificationConfig
+from .config import VerificationConfig
+from .evaluator import PairEvaluator
 
 
 class ModelSpec(Settings):

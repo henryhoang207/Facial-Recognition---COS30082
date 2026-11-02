@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import torch
 from torch import Tensor, nn
@@ -15,7 +16,13 @@ def _check_batch(embeddings: Tensor, labels: Tensor) -> None:
         raise ValueError("embeddings must be a two-dimensional floating-point tensor")
     if labels.ndim != 1 or labels.shape[0] != embeddings.shape[0]:
         raise ValueError("labels must contain one identity index per embedding")
-    if labels.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8):
+    if labels.dtype not in (
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+        torch.uint8,
+    ):
         raise ValueError("labels must contain integer identity indices")
 
 
@@ -37,7 +44,9 @@ class ArcFaceHead(nn.Module):
     ) -> None:
         super().__init__()
         if num_classes < 2 or embedding_dim < 1:
-            raise ValueError("At least two classes and a positive embedding_dim are required")
+            raise ValueError(
+                "At least two classes and a positive embedding_dim are required"
+            )
         if not math.isfinite(margin) or not 0.0 <= margin < math.pi / 2:
             raise ValueError("margin must be finite and in [0, pi/2) radians")
         if not math.isfinite(scale) or scale <= 0:
@@ -130,30 +139,37 @@ class TripletMetricLoss(nn.Module):
                 positive_distances = distances[anchors, positives]
                 if strategy == "semi_hard":
                     anchor_distances = distances[anchors]
-                    candidates &= (
-                        (anchor_distances > positive_distances[:, None])
-                        & (anchor_distances < positive_distances[:, None] + self.margin)
+                    candidates &= (anchor_distances > positive_distances[:, None]) & (
+                        anchor_distances < positive_distances[:, None] + self.margin
                     )
                 eligible_rows = candidates.any(dim=1).nonzero(as_tuple=True)[0]
                 selected = eligible_rows.numel()
                 if selected:
                     sampling_weights = candidates[eligible_rows].float()
                     sampling_device = (
-                        sampling_weights.device if generator is None else generator.device
+                        sampling_weights.device
+                        if generator is None
+                        else generator.device
                     )
-                    negatives = torch.multinomial(
-                        sampling_weights.to(sampling_device), 1, generator=generator
-                    ).flatten().to(features.device)
+                    negatives = (
+                        torch.multinomial(
+                            sampling_weights.to(sampling_device), 1, generator=generator
+                        )
+                        .flatten()
+                        .to(features.device)
+                    )
                     chosen_anchors = anchors[eligible_rows]
                     chosen_positives = positives[eligible_rows]
 
             if selected:
                 positive_squared = (
-                    features[chosen_anchors] - features[chosen_positives]
-                ).square().sum(dim=1)
+                    (features[chosen_anchors] - features[chosen_positives])
+                    .square()
+                    .sum(dim=1)
+                )
                 negative_squared = (
-                    features[chosen_anchors] - features[negatives]
-                ).square().sum(dim=1)
+                    (features[chosen_anchors] - features[negatives]).square().sum(dim=1)
+                )
                 hinge = F.relu(positive_squared - negative_squared + self.margin)
                 loss = hinge.sum() / positive_pairs
                 active = int((hinge.detach() > 0).sum().item())
@@ -173,7 +189,9 @@ class TripletMetricLoss(nn.Module):
                     float(positive_distances.mean().item()) if positive_pairs else 0.0
                 ),
                 "mean_negative_distance": mean_negative,
-                "candidate_coverage": selected / positive_pairs if positive_pairs else 0.0,
+                "candidate_coverage": (
+                    selected / positive_pairs if positive_pairs else 0.0
+                ),
             }
         return loss, stats
 
@@ -213,7 +231,9 @@ class CurriculumGate:
     def update(self, epoch: int, metrics: Mapping[str, float]) -> bool:
         """Return True only when this check triggers the permanent switch."""
         if epoch <= self.last_epoch:
-            raise ValueError("Curriculum checks must use increasing completed epoch counts")
+            raise ValueError(
+                "Curriculum checks must use increasing completed epoch counts"
+            )
         self.last_epoch = int(epoch)
         if self.strategy == "semi_hard":
             return False
@@ -234,7 +254,10 @@ class CurriculumGate:
             and spread > self.spread_threshold
         )
         self.consecutive_passes = self.consecutive_passes + 1 if passed else 0
-        if epoch >= self.min_random_epochs and self.consecutive_passes >= self.consecutive_checks:
+        if (
+            epoch >= self.min_random_epochs
+            and self.consecutive_passes >= self.consecutive_checks
+        ):
             self.strategy = "semi_hard"
             self.switch_epoch = int(epoch)
             return True

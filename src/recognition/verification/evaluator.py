@@ -4,25 +4,16 @@ import csv
 import hashlib
 import shlex
 from pathlib import Path
-from typing import Literal
 
 import cv2
 import numpy as np
-from pydantic import Field
 from sklearn.metrics import roc_auc_score, roc_curve
 from tqdm.auto import tqdm
 
 from src.common.face_crop import crop_face
 from src.common.interfaces import Embedder
-from src.training.config import Settings
 
-
-class VerificationConfig(Settings):
-    root: Path
-    pairs: Path
-    pairs_format: Literal["whitespace", "csv"]
-    target_fpr: float = Field(ge=0, lt=1)
-    selection_metric: Literal["cosine", "euclidean"]
+from .config import VerificationConfig
 
 
 def score_metrics(

@@ -15,11 +15,16 @@ class MetricTotal:
 
 @dataclass(frozen=True)
 class StepResult:
-    """Loss is a scalar mean over weight; metrics carry their own denominators."""
+    """Loss is a scalar mean over weight; metrics carry their own denominators.
+
+    Set optimize=False when a valid batch has no training signal. Its metrics
+    still contribute to the epoch, but it never updates optimizer state.
+    """
 
     loss: Tensor
     weight: int
     metrics: dict[str, MetricTotal] = field(default_factory=dict)
+    optimize: bool = True
 
 
 class TrainingTask(nn.Module, ABC):

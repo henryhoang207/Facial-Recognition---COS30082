@@ -15,7 +15,7 @@ from PIL import Image, UnidentifiedImageError
 import pytest
 import torch
 
-from src.recognition import data
+from src.recognition.verification import data
 
 
 @pytest.fixture

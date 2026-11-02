@@ -8,6 +8,7 @@ import random
 import time
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,7 +33,72 @@ class FitResult:
     best_checkpoint: Path
     last_checkpoint: Path
     best_epoch: int
-    history: list[dict[str, float]]
+    history: list[dict[str, Any]]
+
+
+class TrainingPolicy:
+    """Optional epoch policy; the trainer retains all optimization mechanics.
+
+    Hooks may adjust learning rates and add scalar history annotations. Policy
+    state must contain only tensors and values supported by weights_only loads.
+    """
+
+    def on_epoch_start(
+        self, trainer: "Trainer", epoch: int, loader: DataLoader
+    ) -> None:
+        pass
+
+    def on_batch_start(
+        self, trainer: "Trainer", epoch: int, batch_index: int, batches: int
+    ) -> None:
+        pass
+
+    def on_epoch_end(self, trainer: "Trainer", epoch: int, row: dict[str, Any]) -> None:
+        pass
+
+    def selection(
+        self,
+        trainer: "Trainer",
+        row: dict[str, Any],
+        best_row: dict[str, Any] | None,
+    ) -> tuple[bool, bool]:
+        score = row[trainer.config.monitor]
+        improved = trainer.best is None or (
+            score < trainer.best - trainer.config.min_delta
+            if trainer.config.mode == "min"
+            else score > trainer.best + trainer.config.min_delta
+        )
+        return improved, improved
+
+    def should_stop(self, trainer: "Trainer", epoch: int) -> bool:
+        return (
+            trainer.config.patience is not None
+            and trainer.bad_epochs >= trainer.config.patience
+        )
+
+    def state_dict(self) -> dict:
+        return {}
+
+    def load_state_dict(self, state: dict) -> None:
+        if state:
+            raise ValueError("this training policy has no restorable state")
+
+
+def _cpu_state(value: Any) -> Any:
+    """Clone module state, including optional non-tensor extra state."""
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        result = copy(value)
+        result.update({key: _cpu_state(item) for key, item in value.items()})
+        if hasattr(value, "_metadata"):
+            result._metadata = deepcopy(value._metadata)
+        return result
+    if isinstance(value, tuple):
+        return tuple(_cpu_state(item) for item in value)
+    if isinstance(value, list):
+        return [_cpu_state(item) for item in value]
+    return deepcopy(value)
 
 
 def new_run_dir(root: Path, name: str) -> Path:
@@ -78,7 +144,9 @@ def _restore_rng(state: dict) -> None:
 def _atomic_save(payload: dict, path: Path) -> None:
     temporary = path.with_suffix(f".{uuid4().hex}.tmp")
     try:
-        torch.save(payload, temporary)
+        # Use Python's file API rather than PyTorch's separate path opener.
+        with temporary.open("wb") as stream:
+            torch.save(payload, stream)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -102,6 +170,7 @@ class Trainer:
         scheduler=None,
         metadata: dict | None = None,
         evaluator: Evaluator | None = None,
+        policy: TrainingPolicy | None = None,
     ) -> None:
         self.device = resolve_device(config.device)
         self.task = task.to(self.device)
@@ -127,17 +196,20 @@ class Trainer:
         self.scheduler = scheduler
         self.metadata = metadata or {}
         self.evaluator = evaluator
+        self.policy = policy
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=config.amp and self.device.type == "cuda",
             init_scale=config.amp_init_scale,
         )
-        self.history: list[dict[str, float]] = []
+        self.history: list[dict[str, Any]] = []
         self.best: float | None = None
         self.best_epoch = 0
         self.best_task: dict | None = None
+        self.best_row: dict[str, Any] | None = None
         self.bad_epochs = 0
         self.start_epoch = 1
+        self.current_epoch = 0
 
     def _epoch(self, loader: DataLoader, *, train: bool) -> dict[str, float]:
         self.task.train(train)
@@ -157,7 +229,11 @@ class Trainer:
             disable=not self.config.progress,
         )
         with torch.set_grad_enabled(train):
-            for batch in progress:
+            for batch_index, batch in enumerate(progress):
+                if train and self.policy is not None:
+                    self.policy.on_batch_start(
+                        self, self.current_epoch, batch_index, len(loader)
+                    )
                 with torch.autocast(
                     self.device.type,
                     enabled=self.config.amp and self.device.type == "cuda",
@@ -175,7 +251,7 @@ class Trainer:
                         "step metrics must be stable and exclude loss/optimizer_steps"
                     )
                 expected_metrics = names
-                if train:
+                if train and result.optimize:
                     if window_batches == 0:
                         reference_weight = (
                             result.weight * self.config.accumulation_steps
@@ -243,10 +319,14 @@ class Trainer:
             raise ValueError(f"incompatible resume config/metadata: {sorted(changed)}")
         if self.scheduler is not None and previous["epochs"] != current["epochs"]:
             raise ValueError("cannot change epochs when resuming a scheduled run")
-        if saved["epoch"] >= self.config.epochs:
+        if self.policy is None and saved["epoch"] >= self.config.epochs:
             raise ValueError("resume checkpoint already reached the configured epochs")
         if saved["scheduler_type"] != self._scheduler_type():
             raise ValueError("resume scheduler type differs")
+        if saved.get("policy_type") != self._policy_type():
+            raise ValueError("resume training policy type differs")
+        if self.policy is not None:
+            self.policy.load_state_dict(saved.get("policy_state", {}))
         self.task.load_state_dict(saved["task"])
         group_names = [
             group.get("name", f"group_{index}")
@@ -263,8 +343,13 @@ class Trainer:
         self.best = saved["best"]
         self.best_epoch = saved["best_epoch"]
         self.best_task = saved["best_task"]
+        self.best_row = saved.get("best_row") or dict(self.history[self.best_epoch - 1])
         self.bad_epochs = saved["bad_epochs"]
-        if self.config.patience is not None and self.bad_epochs >= self.config.patience:
+        if (
+            self.policy is None
+            and self.config.patience is not None
+            and self.bad_epochs >= self.config.patience
+        ):
             raise ValueError("resume checkpoint already reached early stopping")
         self.start_epoch = saved["epoch"] + 1
         for name, loader in loaders.items():
@@ -281,12 +366,27 @@ class Trainer:
     def _scheduler_type(self) -> str | None:
         return type(self.scheduler).__qualname__ if self.scheduler is not None else None
 
+    def _policy_type(self) -> str | None:
+        if self.policy is None:
+            return None
+        cls = type(self.policy)
+        return f"{cls.__module__}.{cls.__qualname__}"
+
+    def _policy_checkpoint(self) -> dict:
+        if self.policy is None:
+            return {}
+        return {
+            "policy_type": self._policy_type(),
+            "policy_state": self.policy.state_dict(),
+        }
+
     def _checkpoint(self, epoch: int, loaders: dict[str, DataLoader]) -> dict:
         return {
             "format_version": 1,
             "checkpoint_kind": "training",
             "task": self.task.state_dict(),
             "best_task": self.best_task,
+            "best_row": self.best_row,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
                 self.scheduler.state_dict() if self.scheduler is not None else None
@@ -309,6 +409,7 @@ class Trainer:
                 )
                 for name, loader in loaders.items()
             },
+            **self._policy_checkpoint(),
         }
 
     def _best_checkpoint(self) -> dict:
@@ -321,13 +422,15 @@ class Trainer:
             "best": self.best,
             "training_config": self.config.model_dump(mode="json"),
             "metadata": self.metadata,
-            "val_metrics": self.history[self.best_epoch - 1],
+            "val_metrics": self.best_row,
+            "best_row": self.best_row,
+            **self._policy_checkpoint(),
         }
 
     def fit(
         self,
         train_loader: DataLoader,
-        val_loader: DataLoader,
+        val_loader: DataLoader | None = None,
         *,
         resume: Path | None = None,
     ) -> FitResult:
@@ -337,10 +440,15 @@ class Trainer:
             raise ValueError(
                 "run_dir must be empty; use a new directory even for resume"
             )
-        loaders = {"train": train_loader, "val": val_loader}
+        if val_loader is None and self.evaluator is None:
+            raise ValueError("val_loader or a whole-validation evaluator is required")
+        loaders = {"train": train_loader}
+        if val_loader is not None:
+            loaders["val"] = val_loader
         seed_everything(self.config.seed, self.config.deterministic)
         if resume is not None:
             self._resume(Path(resume), loaders)
+        initial_epochs = len(self.history)
         settings = {
             "training": self.config.model_dump(mode="json"),
             "metadata": self.metadata,
@@ -362,18 +470,24 @@ class Trainer:
             json.dumps(environment, indent=2), encoding="utf-8"
         )
         for epoch in range(self.start_epoch, self.config.epochs + 1):
-            if (
-                self.config.patience is not None
-                and self.bad_epochs >= self.config.patience
-            ):
+            if self._should_stop(epoch):
                 break
+            self.current_epoch = epoch
+            samplers = (train_loader.sampler, train_loader.batch_sampler)
+            seen = set()
+            for sampler in samplers:
+                if id(sampler) not in seen and hasattr(sampler, "set_epoch"):
+                    sampler.set_epoch(epoch - 1)
+                    seen.add(id(sampler))
+            if self.policy is not None:
+                self.policy.on_epoch_start(self, epoch, train_loader)
             learning_rate = self.optimizer.param_groups[0]["lr"]
             group_learning_rates = {
                 f"lr_{group.get('name', f'group_{index}')}": group["lr"]
                 for index, group in enumerate(self.optimizer.param_groups)
             }
             train = self._epoch(train_loader, train=True)
-            val = self._epoch(val_loader, train=False)
+            val = self._epoch(val_loader, train=False) if val_loader is not None else {}
             row = {"epoch": epoch, "lr": learning_rate}
             row.update(group_learning_rates)
             row.update({f"train_{key}": value for key, value in train.items()})
@@ -387,26 +501,38 @@ class Trainer:
                         "evaluator metrics must not overwrite existing metrics"
                     )
                 row.update(extra)
+            if self.policy is not None:
+                self.policy.on_epoch_end(self, epoch, row)
             if self.config.monitor not in row:
                 raise ValueError(f"monitor metric unavailable: {self.config.monitor}")
-            if not all(math.isfinite(value) for value in row.values()):
-                raise ValueError("all epoch metrics must be finite")
+            if any(
+                not isinstance(value, (int, float, str))
+                or (not isinstance(value, str) and not math.isfinite(value))
+                for value in row.values()
+            ):
+                raise ValueError("epoch values must be finite numbers or strings")
             score = row[self.config.monitor]
+            if isinstance(score, str):
+                raise ValueError("monitor metric must be numeric")
             delta = self.config.min_delta
             improved = self.best is None or (
                 score < self.best - delta
                 if self.config.mode == "min"
                 else score > self.best + delta
             )
+            reset_patience = improved
+            if self.policy is not None:
+                improved, reset_patience = self.policy.selection(
+                    self, row, self.best_row
+                )
             if improved:
-                self.best, self.best_epoch, self.bad_epochs = score, epoch, 0
-                self.best_task = {
-                    name: value.detach().cpu().clone()
-                    for name, value in self.task.state_dict().items()
-                }
-            else:
-                if self._early_stopping_active(epoch):
-                    self.bad_epochs += 1
+                self.best, self.best_epoch = score, epoch
+                self.best_task = _cpu_state(self.task.state_dict())
+                self.best_row = dict(row)
+            if reset_patience:
+                self.bad_epochs = 0
+            elif self._early_stopping_active(epoch):
+                self.bad_epochs += 1
             if self.scheduler is not None and train["optimizer_steps"] > 0:
                 if isinstance(
                     self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -419,25 +545,26 @@ class Trainer:
             if improved:
                 _atomic_save(self._best_checkpoint(), self.run_dir / "best.pt")
             _atomic_save(payload, self.run_dir / "last.pt")
-            with (self.run_dir / "history.csv").open(
-                "w", newline="", encoding="utf-8"
-            ) as stream:
-                columns = list(
-                    dict.fromkeys(key for entry in self.history for key in entry)
-                )
-                writer = csv.DictWriter(stream, fieldnames=columns)
-                writer.writeheader()
-                writer.writerows(self.history)
+            self._write_history()
             if self.config.progress:
                 tqdm.write(
                     f"epoch {epoch}: {self.config.monitor}={score:.6f}; "
                     f"best epoch {self.best_epoch}"
                 )
+        if not self.history:
+            raise ValueError("training policy stopped before any epoch completed")
+        if len(self.history) == initial_epochs:
+            # A completed policy run can be finalized into a fresh session.
+            self.current_epoch = int(self.history[-1]["epoch"])
+            _atomic_save(
+                self._checkpoint(self.current_epoch, loaders), self.run_dir / "last.pt"
+            )
+            self._write_history()
         (self.run_dir / "summary.json").write_text(
             json.dumps(
                 {
                     "epochs_in_checkpoint": self.history[-1]["epoch"],
-                    "epochs_this_invocation": len(self.history) - self.start_epoch + 1,
+                    "epochs_this_invocation": len(self.history) - initial_epochs,
                     "best_epoch": self.best_epoch,
                     "monitor": self.config.monitor,
                     "best_value": self.best,
@@ -461,3 +588,19 @@ class Trainer:
         if self.config.warmup_epochs and self.scheduler is not None:
             return self.scheduler.last_epoch >= self.config.warmup_epochs
         return epoch > self.config.warmup_epochs
+
+    def _should_stop(self, epoch: int) -> bool:
+        if self.policy is not None:
+            return self.policy.should_stop(self, epoch)
+        return (
+            self.config.patience is not None and self.bad_epochs >= self.config.patience
+        )
+
+    def _write_history(self) -> None:
+        with (self.run_dir / "history.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
+            columns = list(dict.fromkeys(key for row in self.history for key in row))
+            writer = csv.DictWriter(stream, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(self.history)
