@@ -1,17 +1,26 @@
-# Deep learning (Colab / Kaggle already have these; install locally)
-torch>=2.2
-torchvision>=0.17
+# Install into the dedicated Python 3.11 Conda environment, never into base.
+# Explicit CUDA build suffixes prevent accidentally installing CPU-only PyTorch.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
 
-# Data and evaluation
-numpy>=1.26
-pandas>=2.1
-scikit-learn>=1.4
-matplotlib>=3.8
-Pillow>=10.0
-tqdm>=4.66
+# Keep the numerical and image stack compatible across both notebooks.
+numpy==2.2.6
+pandas==2.2.3
+scipy==1.15.3
+scikit-learn==1.6.1
+matplotlib==3.10.3
+pyparsing==3.2.3
+Pillow==11.2.1
+opencv-python==4.11.0.86
+duckdb==2.0.0
+tqdm==4.67.1
+seaborn==0.13.2
 
-# Webcam, face crop
-opencv-python>=4.9
-
-# Web app (proposed stack, confirm at the first meeting)
-flask>=3.0
+# Notebook execution, validation, and the existing application.
+ipykernel==6.29.5
+nbformat==5.10.4
+nbclient==0.10.2
+jupyterlab==4.4.3
+pytest==8.3.5
+flask==3.1.1

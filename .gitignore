@@ -18,6 +18,11 @@ data/*
 
 # Model weights: keep on Drive
 checkpoints/
+artifacts/
+.conda/
+.test_artifacts/
+.pytest_cache/
+pytest-cache-files-*/
 *.pt
 *.pth
 *.ckpt
@@ -45,3 +50,5 @@ desktop.ini
 
 
 reports/docs/
+
+reports/recognition/research
