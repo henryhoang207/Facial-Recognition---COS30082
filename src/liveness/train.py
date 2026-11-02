@@ -1,169 +1,252 @@
-"""Train one liveness model and keep the checkpoint with the best val ACER.
+"""Train liveness with the shared resumable trainer; export the app format."""
 
-Usage (from the repo root):
-    python -m src.liveness.train --model mobilenetv3 --manifest DATA/liveness/celeba.csv DATA/liveness/recorded.csv \\
-        --data-root DATA --ckpt-dir DRIVE/checkpoints --epochs 15
-
-The checkpoint is saved as <ckpt-dir>/liveness_<model>_<date>.pt and stores the weights,
-the config, and the threshold picked on val (equal error rate point). evaluate.py and
-the app both use that threshold, so the test set never influences it.
-"""
-
-import argparse
+import hashlib
 import json
-import random
-from datetime import date
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 
+from src.training import (
+    Trainer,
+    make_optimizer,
+    make_scheduler,
+    new_run_dir,
+    seed_everything,
+)
+from src.training.config import resolve_device
+from src.training.trainer import _atomic_save
+
+from .config import LivenessConfig, load_config
 from .data import load_manifests, make_loader
 from .metrics import eer_threshold, summarize
 from .models import build_model
+from .provenance import audit_images, make_provenance
+from .task import LivenessTask
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-DEFAULTS = {
-    "mobilenetv3": {"lr": 3e-4, "freeze_blocks": 4, "batch_size": 64},
-    "deeppixbis": {"lr": 1e-4, "freeze_blocks": 0, "batch_size": 32},
-}
+
+def source_identity():
+    root = Path(__file__).parents[2]
+    bundle = root / "SOURCE_REVISION.json"
+    if bundle.exists():
+        revision = json.loads(bundle.read_text(encoding="utf-8"))["commit"]
+    else:
+        try:
+            revision = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            revision = "unavailable"
+    files = {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for folder in ("src/liveness", "src/training", "src/datasets")
+        for path in sorted((root / folder).glob("*.py"))
+    }
+    return {
+        "commit": revision,
+        "code_sha256": hashlib.sha256(
+            json.dumps(files, sort_keys=True).encode()
+        ).hexdigest(),
+    }
 
 
-def set_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-@torch.no_grad()
+@torch.inference_mode()
 def predict_scores(model, loader, device) -> np.ndarray:
     model.eval()
-    scores = []
-    for x, _ in tqdm(loader, desc="eval", leave=False):
-        with torch.autocast(device.type, enabled=device.type == "cuda"):
-            out = model(x.to(device, non_blocking=True))
-        scores.append(model.score(out).float().cpu())
+    scores = [
+        model.score(model(images.to(device))).double().cpu() for images, _ in loader
+    ]
+    if not scores:
+        raise ValueError("empty evaluation loader")
     return torch.cat(scores).numpy()
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device) -> float:
-    model.train()
-    total, n = 0.0, 0
-    for x, y in tqdm(loader, desc="train", leave=False):
-        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device.type, enabled=device.type == "cuda"):
-            loss = model.loss(model(x), y)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        total += loss.item() * len(y)
-        n += len(y)
-    return total / max(n, 1)
-
-
 def plot_history(history: pd.DataFrame, path: Path):
-    fig, (a, b) = plt.subplots(1, 2, figsize=(10, 3.5))
-    a.plot(history.epoch, history.train_loss, marker="o")
-    a.set(xlabel="epoch", ylabel="train loss", title="Training loss")
-    b.plot(history.epoch, history.val_acer * 100, marker="o", label="val ACER")
-    b.plot(history.epoch, history.val_eer * 100, marker="o", label="val EER")
-    b.set(xlabel="epoch", ylabel="%", title="Validation error")
-    b.legend()
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
+    figure, axes = plt.subplots(1, 2, figsize=(10, 3.5))
+    for column in ("train_loss", "val_loss"):
+        axes[0].plot(history.epoch, history[column], label=column)
+    for column in ("val_acer", "val_eer"):
+        axes[1].plot(history.epoch, history[column] * 100, label=column)
+    for axis in axes:
+        axis.set_xlabel("Epoch")
+        axis.legend()
+    axes[0].set_ylabel("Loss")
+    axes[1].set_ylabel("Validation error (%)")
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", choices=list(DEFAULTS), required=True)
-    ap.add_argument("--manifest", type=Path, nargs="+", required=True)
-    ap.add_argument("--data-root", type=Path, required=True)
-    ap.add_argument("--ckpt-dir", type=Path, required=True)
-    ap.add_argument("--fig-dir", type=Path, default=Path("reports/figures"))
-    ap.add_argument("--epochs", type=int, default=15)
-    ap.add_argument("--patience", type=int, default=4, help="stop after this many epochs without val improvement")
-    ap.add_argument("--batch-size", type=int, default=None)
-    ap.add_argument("--lr", type=float, default=None)
-    ap.add_argument("--weight-decay", type=float, default=1e-4)
-    ap.add_argument("--freeze-blocks", type=int, default=None)
-    ap.add_argument("--img-size", type=int, default=224)
-    ap.add_argument("--crop-scale", type=float, default=2.0,
-                    help="crop side / face box side; 2.0 keeps phone edges and paper borders in view")
-    ap.add_argument("--max-train", type=int, default=None, help="subsample training images for a quick run")
-    ap.add_argument("--num-workers", type=int, default=2)
-    ap.add_argument("--no-pretrained", action="store_true", help="random init instead of ImageNet weights")
-    ap.add_argument("--tag", default=None, help="model name in file names (default: --model)")
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
+def subset(frame, maximum, seed):
+    """Deterministic stratified pilots; full data is the default."""
+    if maximum is None or maximum >= len(frame):
+        return frame.reset_index(drop=True)
+    from sklearn.model_selection import train_test_split
 
-    cfg = {**DEFAULTS[args.model], **{k: v for k, v in vars(args).items() if v is not None}}
-    cfg = {k: str(v) if isinstance(v, Path) else v for k, v in cfg.items()}
-    cfg["manifest"] = [str(p) for p in args.manifest]
-    tag = cfg.get("tag") or args.model
-    set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if maximum < frame.attack.nunique():
+        raise ValueError("pilot cap must cover every attack group")
+    selected, _ = train_test_split(
+        frame, train_size=maximum, stratify=frame.attack, random_state=seed
+    )
+    return selected.sort_values("path").reset_index(drop=True)
 
-    df = load_manifests(args.manifest)
-    train_df, val_df = df[df.split == "train"], df[df.split == "val"]
-    if args.max_train and len(train_df) > args.max_train:
-        train_df = train_df.sample(args.max_train, random_state=args.seed)
-    print(f"device {device} | train {len(train_df)} | val {len(val_df)} | "
-          f"live share train {train_df.label.mean():.2f}, val {val_df.label.mean():.2f}")
-    overlap = set(train_df.subject) & set(val_df.subject)
-    assert not overlap, f"subjects in both train and val: {sorted(overlap)[:5]}"
 
-    loader_args = dict(data_root=args.data_root, size=args.img_size, crop_scale=args.crop_scale,
-                       batch_size=cfg["batch_size"], num_workers=args.num_workers)
-    train_loader = make_loader(train_df, train=True, **loader_args)
-    val_loader = make_loader(val_df, train=False, **loader_args)
+def train(config: LivenessConfig, *, resume: Path | None = None):
+    seed_everything(config.training.seed, config.training.deterministic)
+    frame = audit_images(load_manifests(list(config.manifest)), config.data_root)
+    for split in ("train", "val"):
+        if set(frame.loc[frame.split == split, "label"]) != {0, 1}:
+            raise ValueError(f"{split} requires live and spoof")
+    train_frame = subset(
+        frame[frame.split == "train"], config.max_train, config.training.seed
+    )
+    val_frame = subset(
+        frame[frame.split == "val"], config.max_val, config.training.seed
+    )
+    loader_options = dict(
+        data_root=config.data_root,
+        size=config.img_size,
+        crop_scale=config.crop_scale,
+        batch_size=config.training.batch_size,
+        num_workers=config.training.num_workers,
+        seed=config.training.seed,
+    )
+    train_loader = make_loader(train_frame, train=True, **loader_options)
+    val_loader = make_loader(val_frame, train=False, **loader_options)
+    score_loader = make_loader(val_frame, train=False, **loader_options)
+    task = LivenessTask(
+        build_model(
+            config.model,
+            pretrained=config.pretrained and resume is None,
+            freeze_blocks=config.freeze_blocks,
+            img_size=config.img_size,
+        )
+    )
+    task.to(resolve_device(config.training.device))
 
-    model = build_model(args.model, pretrained=not args.no_pretrained, freeze_blocks=cfg["freeze_blocks"],
-                        img_size=args.img_size).to(device)
-    params = [p for p in model.parameters() if p.requires_grad]
-    print(f"{sum(p.numel() for p in params):,} trainable / {sum(p.numel() for p in model.parameters()):,} parameters")
-    optimizer = torch.optim.AdamW(params, lr=cfg["lr"], weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
+    def evaluator(task, device):
+        scores = predict_scores(task.model, score_loader, device)
+        threshold, _ = eer_threshold(scores, val_frame.label)
+        metrics = summarize(scores, val_frame.label, val_frame.attack, threshold)
+        return {
+            "val_" + key: metrics[key]
+            for key in ("acer", "eer", "auc", "threshold", "apcer", "bpcer")
+        }
 
-    args.ckpt_dir.mkdir(parents=True, exist_ok=True)
-    args.fig_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = args.ckpt_dir / f"liveness_{tag}_{date.today().isoformat()}.pt"
-    history, best, since_best = [], None, 0
+    portable_config = config.model_dump(
+        mode="json",
+        exclude={"data_root", "manifest", "output_dir", "fig_dir", "training"},
+    )
+    metadata = {
+        "task": "liveness",
+        "source": source_identity(),
+        "model_config": portable_config,
+        "provenance": make_provenance(frame),
+        "selected_train_paths": sorted(train_frame.path.tolist()),
+        "selected_val_paths": sorted(val_frame.path.tolist()),
+    }
+    directory = new_run_dir(
+        config.output_dir, "liveness_" + (config.tag or config.model)
+    )
+    optimizer = make_optimizer(task, config.training)
+    trainer = Trainer(
+        task,
+        optimizer,
+        config.training,
+        directory,
+        scheduler=make_scheduler(optimizer, config.training),
+        metadata=metadata,
+        evaluator=evaluator,
+    )
+    result = trainer.fit(train_loader, val_loader, resume=resume)
+    (directory / "runtime.json").write_text(
+        json.dumps(
+            {
+                "gpu_peak_allocated_bytes": (
+                    torch.cuda.max_memory_allocated()
+                    if torch.cuda.is_available()
+                    else None
+                ),
+                "training_examples": len(train_frame),
+                "validation_examples": len(val_frame),
+                "parameters": sum(parameter.numel() for parameter in task.parameters()),
+                "trainable_parameters": sum(
+                    parameter.numel()
+                    for parameter in task.parameters()
+                    if parameter.requires_grad
+                ),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    best = torch.load(result.best_checkpoint, map_location="cpu", weights_only=True)
+    cfg = {
+        **portable_config,
+        "manifest": [str(path) for path in config.manifest],
+        "provenance": metadata["provenance"],
+        "training": config.training.model_dump(mode="json"),
+        "run_id": directory.name,
+        "source": metadata["source"],
+    }
+    date = datetime.now(UTC).date().isoformat()
+    checkpoint = directory / f"liveness_{config.tag or config.model}_{date}.pt"
+    _atomic_save(
+        {
+            "model": {
+                key.removeprefix("model."): value for key, value in best["task"].items()
+            },
+            "config": cfg,
+            "threshold": best["val_metrics"]["val_threshold"],
+            "epoch": best["best_epoch"],
+            "val_metrics": best["val_metrics"],
+        },
+        checkpoint,
+    )
+    frame.to_csv(directory / "manifest.csv", index=False)
+    (directory / "resolved_config.json").write_text(
+        config.model_dump_json(indent=2), encoding="utf-8"
+    )
+    (directory / "source.json").write_text(
+        json.dumps(
+            {**metadata["source"], "resume_from": str(resume) if resume else None}
+        ),
+        encoding="utf-8",
+    )
+    config.fig_dir.mkdir(parents=True, exist_ok=True)
+    history = pd.DataFrame(result.history)
+    tag = config.tag or config.model
+    history.to_csv(config.fig_dir / f"liveness_{tag}_history.csv", index=False)
+    plot_history(history, config.fig_dir / f"liveness_{tag}_training.png")
+    (directory / "export.json").write_text(
+        json.dumps({"checkpoint": str(checkpoint), "best_epoch": result.best_epoch}),
+        encoding="utf-8",
+    )
+    print(
+        json.dumps(
+            {
+                "checkpoint": str(checkpoint),
+                "run_dir": str(directory),
+                "best_epoch": result.best_epoch,
+            }
+        )
+    )
+    return result
 
-    for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, scaler, device)
-        scheduler.step()
-        scores = predict_scores(model, val_loader, device)
-        threshold, _ = eer_threshold(scores, val_df.label.to_numpy())
-        val = summarize(scores, val_df.label, val_df.attack, threshold)
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_acer": val["acer"],
-                        "val_eer": val["eer"], "val_auc": val["auc"], "threshold": threshold})
-        improved = best is None or val["acer"] < best["acer"] or (val["acer"] == best["acer"] and val["auc"] > best["auc"])
-        print(f"epoch {epoch:2d} | loss {train_loss:.4f} | val ACER {val['acer']:.2%} "
-              f"(APCER {val['apcer']:.2%}, BPCER {val['bpcer']:.2%}) | AUC {val['auc']:.4f}"
-              + (" | saved" if improved else ""))
-        if improved:
-            best, since_best = val, 0
-            torch.save({"model": model.state_dict(), "config": cfg, "threshold": threshold, "epoch": epoch,
-                        "val_metrics": json.loads(json.dumps(val))}, ckpt_path)
-        else:
-            since_best += 1
-            if since_best >= args.patience:
-                print(f"no val improvement for {args.patience} epochs, stopping")
-                break
 
-    history = pd.DataFrame(history)
-    history.to_csv(args.fig_dir / f"liveness_{tag}_history.csv", index=False)
-    plot_history(history, args.fig_dir / f"liveness_{tag}_training.png")
-    print(f"best val ACER {best['acer']:.2%} at threshold {best['threshold']:.3f} -> {ckpt_path}")
+def main(argv=None):
+    config, resume = load_config(argv)
+    train(config, resume=resume)
 
 
 if __name__ == "__main__":

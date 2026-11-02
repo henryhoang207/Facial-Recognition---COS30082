@@ -1,12 +1,15 @@
 [tool.black]
 target-version = ["py312"]
 line-length = 88
-include = '(examples/|src/training/|src/datasets/|src/recognition/classification/|src/recognition/verification/|tests/test_datasets|tests/test_training|tests/test_recognition|scripts/check_training.py|scripts/check_docs.py)'
+include = '(examples/|src/training/|src/datasets/|src/liveness/|src/recognition/classification/|src/recognition/verification/|tests/test_datasets|tests/test_liveness|tests/test_training|tests/test_recognition|scripts/check_training.py|scripts/check_docs.py|scripts/build_liveness_notebook.py|scripts/bundle_liveness.py)'
 
 [tool.ruff]
 target-version = "py312"
 line-length = 88
-include = ["examples/**/*.py", "src/training/**/*.py", "src/datasets/**/*.py", "src/recognition/classification/**/*.py", "src/recognition/verification/**/*.py", "tests/test_datasets*.py", "tests/test_training*.py", "tests/test_recognition*.py", "scripts/check_training.py", "scripts/check_docs.py"]
+include = ["examples/**/*.py", "src/training/**/*.py", "src/datasets/**/*.py", "src/liveness/**/*.py", "src/recognition/classification/**/*.py", "src/recognition/verification/**/*.py", "tests/test_datasets*.py", "tests/test_liveness*.py", "tests/test_training*.py", "tests/test_recognition*.py", "scripts/check_training.py", "scripts/check_docs.py", "scripts/build_liveness_notebook.py", "scripts/bundle_liveness.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/build_liveness_notebook.py" = ["E501"]

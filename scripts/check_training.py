@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import black
@@ -13,11 +14,16 @@ OWNED = [
     "examples",
     "src/training",
     "src/datasets",
+    "src/liveness",
     "src/recognition/classification",
     "src/recognition/verification",
     "tests/test_training.py",
     "tests/test_datasets.py",
     "tests/test_recognition.py",
+    "tests/test_liveness.py",
+    "tests/test_liveness_workflow.py",
+    "scripts/build_liveness_notebook.py",
+    "scripts/bundle_liveness.py",
     "scripts/check_training.py",
     "scripts/check_docs.py",
 ]
@@ -63,11 +69,12 @@ def main() -> None:
             "tests/test_datasets.py",
         ]
         if args.include_liveness:
-            tests.append("tests/test_liveness.py")
+            tests.extend(["tests/test_liveness.py", "tests/test_liveness_workflow.py"])
         # Never clean an existing directory: every verification gets a unique base.
         from uuid import uuid4
 
-        temporary = ROOT / "runs" / f"pytest-{uuid4().hex}"
+        # Native OpenCV file APIs cannot reliably use non-ASCII Windows paths.
+        temporary = Path(tempfile.gettempdir()) / f"faceguard-pytest-{uuid4().hex}"
         subprocess.run(
             [
                 sys.executable,

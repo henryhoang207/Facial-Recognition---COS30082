@@ -1,6 +1,6 @@
 # Deep learning (Colab / Kaggle already have these; install locally)
-torch>=2.2
-torchvision>=0.17
+torch>=2.3
+torchvision>=0.18
 
 # Data and evaluation
 numpy>=1.26
@@ -9,9 +9,12 @@ scikit-learn>=1.4
 matplotlib>=3.8
 Pillow>=10.0
 tqdm>=4.66
+PyYAML==6.0.3
+pydantic==2.12.5
+duckdb==1.4.4
 
 # Webcam, face crop
-opencv-python>=4.9
+opencv-python==4.13.0.92
 
 # Web app (proposed stack, confirm at the first meeting)
 flask>=3.0

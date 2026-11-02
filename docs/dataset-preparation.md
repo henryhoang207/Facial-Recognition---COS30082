@@ -82,7 +82,7 @@ The default protocol uses live images, print attacks, and replay attacks. Mask a
 python -m src.liveness.train --model mobilenetv3 --manifest data/manifests/celeba_liveness.csv --data-root data/CelebA_Spoof_processed --ckpt-dir checkpoints --num-workers 0
 ```
 
-The liveness trainer, models, and evaluation remain unchanged. VGGFace2 receives full-file hash and header checks. Every exported CelebA row receives an image-header/dimension and bbox check. These checks do not decode every pixel of every image.
+The processed exporter feeds the [Colab liveness workflow](liveness-colab.md), which adds resumable training and portable evaluation provenance. VGGFace2 receives full-file hash and header checks. Every exported CelebA row receives a full decode, content hash and bbox intersection check. Exact cross-split duplicates are removed from lower-priority splits; conflicting hash labels are rejected. Near-duplicate/session separation is not established by these checks.
 
 ## Use processed DFEW with emotion models
 
