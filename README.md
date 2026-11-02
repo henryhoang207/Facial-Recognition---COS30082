@@ -18,8 +18,8 @@ Attendance is only logged when the face is recognised **and** live.
 | Member | Owns | Code |
 | --- | --- | --- |
 | Hoàng Hữu Hoan (lead) | Anti-spoofing; repo, notebook template, checkpoints, submission | `src/liveness/` |
-| Giáp Hoàng Gia Khánh | Face recognition Model A (classification), optional ArcFace | `src/recognition/` |
-| Lê Đức Anh | Face recognition Model B (triplet loss), ROC/AUC verification script | `src/recognition/` |
+| Giáp Hoàng Gia Khánh | Face recognition Model A (classification), optional ArcFace; shared ROC/AUC evaluation and threshold | `src/recognition/` |
+| Lê Đức Anh | Face recognition Model B (triplet loss) | `src/recognition/` |
 | Trần Mạnh Đức | Emotion detection | `src/emotion/` |
 | Lê Đức Thành | Datasets, shared face crop + loaders, spoof recordings, group report | `src/common/` |
 | Nguyễn Nam Khánh | Web app and integration | `app/` |
@@ -85,15 +85,21 @@ pip install -r requirements.txt
 
 ## Training and inference
 
-Each owner fills in their section when their model is ready.
+Start with the [shared training guide](docs/training-guide.md) for environment setup, YAML configuration, CLI commands, warmup, accumulation, optimizer groups, and resume.
+The [documentation index](docs/README.md) links to dataset, recognition, and design details.
+Task-specific commands are listed below.
 
 ### Face recognition: Model A (classification)
 
-_TODO (Gia Khánh): how to train, how to run inference, final AUC._
+Gia Khánh: Model A (ResNet-18 + cross-entropy), Model C (ArcFace), and shared verification evaluation.
+See [training, YAML configuration, inference and ROC/AUC](docs/recognition-training.md).
+The reusable loop is in `src/training/`; A/C are isolated in `src/recognition/classification/`.
+Local dataset manifests are connected; real-data accuracy, AUC and CPU latency are pending full training and evaluation.
 
 ### Face recognition: Model B (triplet loss)
 
-_TODO (Đức Anh): how to train, how to run inference, final AUC, chosen threshold._
+_TODO (Đức Anh): how to train and run inference for Model B._
+Verification, ROC/AUC comparison and threshold calibration use the shared evaluator linked above.
 
 ### Anti-spoofing
 

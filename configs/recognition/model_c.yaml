@@ -1,0 +1,70 @@
+model:
+  variant: c
+  backbone: resnet18
+  embedding_dim: 128
+  initialization: random
+  arcface_scale: 30.0
+  arcface_margin: 0.3
+preprocess:
+  size: 112
+  crop_scale: 1.0
+  mean: [0.5, 0.5, 0.5]
+  std: [0.5, 0.5, 0.5]
+  horizontal_flip: 0.5
+  brightness: 0.1
+data:
+  root: ../../data/VGGFace2
+  train_dir: train_data
+  val_dir: val_data
+  test_dir: test_data
+  manifest: ../../data/manifests/vggface2_classification.csv
+training:
+  epochs: 30
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  adam_betas: [0.9, 0.999]
+  adam_eps: 1.0e-8
+  adam_amsgrad: false
+  sgd_momentum: 0.0
+  sgd_dampening: 0.0
+  sgd_nesterov: false
+  parameter_groups:
+    - name: backbone
+      modules: [model.encoder.backbone]
+      lr: null
+      lr_scale: 1.0
+      weight_decay: null
+    - name: head
+      modules: [model.encoder.projection, model.head]
+      lr: null
+      lr_scale: 1.0
+      weight_decay: null
+  scheduler: cosine
+  eta_min: 0.0
+  cosine_t_max: null
+  warmup_epochs: 0
+  warmup_start_factor: 0.1
+  accumulation_steps: 1
+  seed: 42
+  device: auto
+  amp: true
+  amp_init_scale: 65536.0
+  deterministic: false
+  num_workers: 0
+  monitor: val_auc
+  mode: max
+  patience: 5
+  min_delta: 0.0
+  early_stopping_start_epoch: null
+  clip_grad_norm: null
+  progress: true
+output_dir: ../../runs/recognition
+evaluator: null
+verification:
+  root: ../../data/VGGFace2
+  pairs: ../../data/manifests/verification_pairs_val.csv
+  pairs_format: csv
+  target_fpr: 0.01
+  selection_metric: cosine

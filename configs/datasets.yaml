@@ -1,0 +1,31 @@
+# Paths are relative to this YAML. Generated files stay under ignored data/.
+output_dir: ../data/manifests
+seed: 42
+workers: 8
+recognition:
+  root: ../data/VGGFace2
+  database: vggface2.duckdb
+  val_fraction: 0.1
+  test_fraction: 0.1
+  verification_val_fraction: 0.5
+  positive_pairs: 3000
+  negative_pairs: 3000
+liveness:
+  root: ../data/CelebA_Spoof_processed
+  database: celeba_spoof.duckdb
+  val_fraction: 0.15
+  attacks: [print, replay]
+emotion:
+  root: ../data/DFEW_processed
+  database: dfew.duckdb
+  splits_dir: 5-fold_cross_val_split
+  val_fraction: 0.15
+  expected_frames: 16
+team:
+  root: ../data/faces
+  role: gallery
+  detector_max_side: 1280
+  detector_scale_factor: 1.1
+  detector_min_neighbors: 6
+  detector_min_size: 40
+  min_face_area_fraction: 0.05
