@@ -62,19 +62,22 @@ checkpoints/         local model weights (not committed, see below)
 ### Colab / Kaggle (training)
 
 Open `notebooks/00_template.ipynb`, save a copy as `notebooks/<task>_<model>.ipynb`, and run the Setup cell.
-It clones this repo, installs `requirements.txt` and mounts Drive.
-Colab and Kaggle already ship with PyTorch, so the setup cell does not reinstall it.
+Review the setup cell before running it on a hosted service: `requirements.txt` now describes the shared CUDA 13.0 environment, including pinned PyTorch builds. The local lockfile is the reference for reproducible training. Hosted services supply their own Python, GPU driver, and PyTorch versions, so their compatibility must be checked separately.
 
 The shared Drive folder appears under *Shared with me*. Right-click it → *Organise → Add shortcut* → *My Drive*
 so every notebook can find it at `/content/drive/MyDrive/FaceGuard`.
 
-### Local (app and quick tests)
+### Local (app, notebooks, and training)
 
-```bash
-python -m venv .venv
-source .venv/Scripts/activate     # Windows Git Bash; use .venv\Scripts\activate in cmd / PowerShell
-pip install -r requirements.txt
+From the repository root in PowerShell, use the shared environment from `main`:
+
+```powershell
+./scripts/setup_environment.ps1
+. ./.venv/Scripts/Activate.ps1
+python -m jupyterlab
 ```
+
+The setup script creates `.venv` with Python 3.14, installs the shared CUDA 13.0 lockfile, checks CUDA, and registers **Python (FaceGuard CUDA 13.0)** under kernel ID `mtrlearn`. PyTorch is `2.10.0+cu130` and torchvision is `0.25.0+cu130`. The metric-learning notebooks and the existing application use the same dependencies. See the [training guide](docs/training-guide.md) for manual setup, supported Python versions, and lockfile regeneration. An existing Conda `mtrlearn` environment is left in place; the registered kernel points to `.venv` after setup.
 
 ## Workflow
 
@@ -98,8 +101,7 @@ Local dataset manifests are connected; real-data accuracy, AUC and CPU latency a
 
 ### Face recognition: Model B (triplet loss)
 
-_TODO (Đức Anh): how to train and run inference for Model B._
-Verification, ROC/AUC comparison and threshold calibration use the shared evaluator linked above.
+Run [triplet_loss.ipynb](notebooks/metrics-learn/triplet_loss.ipynb) for B0 or [arcface.ipynb](notebooks/metrics-learn/arcface.ipynb) for B1 using the shared CUDA kernel. Both train an iResNet-34 encoder from random initialization and export normalized 256-dimensional embeddings. See the [metric-learning notebook guide](notebooks/metrics-learn/RECOGNITION.md) for margin sweeps, artifacts, resume rules, and bounded GPU smoke tests. These notebook experiments have their own training and evaluation protocol, separate from the A/C classification CLI above.
 
 ### Anti-spoofing
 

@@ -209,9 +209,8 @@ def verification_metrics(
     if not np.isfinite(tau):
         raise ValueError("The operating threshold must be finite.")
     accepted = scores >= tau
-    integrate = getattr(np, "trapezoid", np.trapz)
     return {
-        "auc": float(integrate(curve["tar"], curve["fmr"])),
+        "auc": float(np.trapezoid(curve["tar"], curve["fmr"])),
         "eer": _eer(curve),
         "tar_at_fmr": float(curve["tar"][index]),
         "target_fmr": float(target_fmr),

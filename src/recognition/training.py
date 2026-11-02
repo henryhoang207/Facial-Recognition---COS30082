@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import gc
 import hashlib
+from importlib import metadata
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import random
+import sys
 import time
 from typing import Any
 
@@ -68,24 +71,59 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def environment_details(device: torch.device) -> dict:
-    import platform
-    import sys
-    import torchvision
+def environment_compatibility() -> dict:
+    """Identify the numerical runtime without machine-specific installation paths.
+
+    A changed runtime starts a new experiment rather than silently resuming or
+    accepting results from a different Python, CUDA, or numerical-library stack.
+    Python patch versions are intentionally compatible within one minor release.
+    """
+    packages = {}
+    for name in ("torchvision", "duckdb", "Pillow", "opencv-python"):
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            packages[name] = "not-installed"
     return {
-        "python": sys.version, "executable": sys.executable,
-        "platform": platform.platform(), "torch": torch.__version__,
-        "torchvision": torchvision.__version__, "cuda_runtime": torch.version.cuda,
-        "device": str(device),
-        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+        "schema": 1,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "platform": platform.system(), "machine": platform.machine(),
+        "torch": str(torch.__version__), "numpy": np.__version__,
+        "pandas": pd.__version__, **packages,
+        "cuda_runtime": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(),
     }
 
 
-def _fingerprint(config: ExperimentConfig, prepared: PreparedData, margin: float, seed: int) -> str:
+def environment_details(device: torch.device) -> dict:
+    return {
+        "python": sys.version, "executable": sys.executable,
+        "platform": platform.platform(), "torch": torch.__version__,
+        "torchvision": metadata.version("torchvision"), "cuda_runtime": torch.version.cuda,
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+        "compatibility": environment_compatibility(),
+    }
+
+
+def _fingerprint(config: ExperimentConfig, prepared: PreparedData, margin: float, seed: int,
+                 compatibility: dict | None = None) -> str:
     settings = config.to_dict()
     settings.pop("resume")
-    payload = {"config": settings, "margin": margin, "seed": seed, "data": prepared.metadata}
+    payload = {"config": settings, "margin": margin, "seed": seed, "data": prepared.metadata,
+               "environment_compatibility": environment_compatibility() if compatibility is None else compatibility}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _require_compatible_artifact(artifact: dict, compatibility: dict, signature: str,
+                                 source: Path) -> None:
+    if artifact.get("environment_compatibility") != compatibility:
+        raise ValueError(
+            f"Run environment changed or compatibility metadata is missing: {source}. "
+            "Use a new artifacts directory; old runs cannot be resumed or reused across runtimes."
+        )
+    if artifact.get("signature") != signature:
+        raise ValueError(f"Run configuration changed (data or settings): {source}. Use a new artifacts directory.")
 
 
 def _optimizer(model: nn.Module, head: nn.Module | None, config: ExperimentConfig):
@@ -131,12 +169,12 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
     run_dir = config.output_dir / "runs" / tag
     weights_dir = run_dir / "weights"
     run_dir.mkdir(parents=True, exist_ok=True)
-    signature = _fingerprint(config, prepared, margin, seed)
+    compatibility = environment_compatibility()
+    signature = _fingerprint(config, prepared, margin, seed, compatibility)
     result_path = run_dir / "result.json"
     if result_path.exists() and config.resume:
         result = json.loads(result_path.read_text(encoding="utf-8"))
-        if result["signature"] != signature:
-            raise ValueError(f"Run configuration changed: {run_dir}. Use a new artifacts directory.")
+        _require_compatible_artifact(result, compatibility, signature, result_path)
         if not Path(result["best_checkpoint"]).exists():
             raise FileNotFoundError(result["best_checkpoint"])
         return result
@@ -172,8 +210,7 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
     last = weights_dir / "last.pt"
     if last.exists():
         state = _load_checkpoint(last, device)
-        if state["signature"] != signature:
-            raise ValueError("Cannot resume a checkpoint from different data or settings.")
+        _require_compatible_artifact(state, compatibility, signature, last)
         model.load_state_dict(state["model"])
         if head is not None:
             head.load_state_dict(state["head"])
@@ -200,7 +237,7 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
     write_json(run_dir / "config.json", {
         **config.to_dict(), "margin": margin, "run_seed": seed, "signature": signature,
         "initial_encoder_sha256": initial_hash.hexdigest(), "data": prepared.metadata,
-        "environment": environment_details(device),
+        "environment": environment_details(device), "environment_compatibility": compatibility,
     })
     timer = time.perf_counter()
     for epoch in range(start_epoch, config.epochs + 1):
@@ -297,6 +334,7 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
             best_tar, best_auc, best_epoch = tar, auc, epoch
         state = {
             "signature": signature, "config": config.to_dict(), "margin": margin, "seed": seed,
+            "environment_compatibility": compatibility,
             "epoch": epoch, "model": model.state_dict(), "head": head.state_dict() if head is not None else None,
             "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "history": history,
             "strategy": strategy, "switch_epoch": switch_epoch, "gate_passes": gate_passes,
@@ -320,6 +358,7 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
     if total_updates == 0:
         raise RuntimeError("No optimizer updates completed. Inspect AMP skips or empty mining before accepting this run.")
     best = _load_checkpoint(weights_dir / "best.pt", device)
+    _require_compatible_artifact(best, compatibility, signature, weights_dir / "best.pt")
     model.load_state_dict(best["model"])
     embeddings = extract_embeddings(model, dev_frame, config.data_root, device,
                                     batch_size=config.evaluation_batch_size, num_workers=config.num_workers)
@@ -331,8 +370,10 @@ def train_run(config: ExperimentConfig, prepared: PreparedData, margin: float, s
         "seed": seed, "threshold": best["dev_metrics"]["threshold"],
         "preprocessing": {"size": 112, "scale": 1.0, "color": "RGB", "mean": [0.5]*3, "std": [0.5]*3},
         "data_metadata": prepared.metadata, "signature": signature,
+        "environment_compatibility": compatibility,
     })
     result = {"method": config.method, "margin": margin, "seed": seed, "signature": signature,
+              "environment_compatibility": compatibility,
               "best_epoch": best_epoch, "dev_tar": best_tar, "dev_auc": best_auc,
               "dev_eer": float(best["dev_metrics"]["eer"]),
               "threshold": float(best["dev_metrics"]["threshold"]), "switch_epoch": switch_epoch,
@@ -376,7 +417,7 @@ def run_sweep(config: ExperimentConfig, prepared: PreparedData, margins=None,
         "method": config.method, "selected_margin": float(chosen.margin),
         "criterion": "dev TAR at target FMR; ties: AUC, earlier epoch, smaller margin",
         "target_fmr": config.target_fmr, "screening_seed": config.seed,
-        "test_used_for_selection": False,
+        "test_used_for_selection": False, "environment_compatibility": environment_compatibility(),
     })
     plot_sweep(sweep, config.output_dir / "graphs" / "sweep_val.png")
     return sweep
@@ -386,11 +427,16 @@ def evaluate_selected(config: ExperimentConfig, prepared: PreparedData, sweep: p
     """Evaluate only the selected margin, preserving each seed's dev threshold."""
     device = configure_runtime(config)
     selection = json.loads((config.output_dir / "selection.json").read_text(encoding="utf-8"))
+    compatibility = environment_compatibility()
+    if selection.get("environment_compatibility") != compatibility:
+        raise ValueError("Selection environment changed or compatibility metadata is missing. Use a new artifacts directory.")
     selected = sweep[np.isclose(sweep.margin, selection["selected_margin"])]
     rows = []
     for record in selected.to_dict("records"):
         model = IResNet34(config.embedding_dim).to(device)
         state = _load_checkpoint(Path(record["best_checkpoint"]), device)
+        signature = _fingerprint(config, prepared, float(record["margin"]), int(record["seed"]), compatibility)
+        _require_compatible_artifact(state, compatibility, signature, Path(record["best_checkpoint"]))
         model.load_state_dict(state["model"])
         dev = extract_embeddings(model, prepared.dev, config.data_root, device,
                                  batch_size=config.evaluation_batch_size, num_workers=config.num_workers)
@@ -405,6 +451,7 @@ def evaluate_selected(config: ExperimentConfig, prepared: PreparedData, sweep: p
         test_open = evaluate_identification(test, prepared.test, enrolled=enrolled, seed=42,
                                              target_fpir=config.target_fpir, threshold=dev_open["threshold"])
         result = {"method": config.method, "margin": float(record["margin"]), "seed": int(record["seed"]),
+                  "environment_compatibility": compatibility,
                   "verification": verification, "dev_open_set": dev_open, "test_open_set": test_open,
                   "verification_ci": subject_bootstrap_ci(test, prepared.test_pairs, float(record["threshold"]))}
         write_json(config.output_dir / "test" / f"seed_{int(record['seed'])}.json", result)

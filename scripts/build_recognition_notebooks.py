@@ -13,25 +13,26 @@ def build(method: str, filename: str) -> None:
     cells = [
         markdown(f"# {title}: iResNet-34 face embeddings\n\n"
                  "**Flow: image processing → model training → loss graphs and saved artifacts.**\n\n"
-                 "Use the **Python (mtrlearn CUDA)** kernel. Both experiments use random iResNet-34, "
+                 "Use the **Python (FaceGuard CUDA 13.0)** kernel. Both experiments use random iResNet-34, "
                  "112×112 RGB crops and 256-dimensional normalized embeddings. "
                  "No pretrained face weights are downloaded. Full runs can take many hours. "
-                 "Set `SMOKE_TEST=True` for a bounded real-image code check; its outputs are isolated under `artifacts/smoke/`."),
+                 "Set `SMOKE_TEST=True` for a bounded real-image code check; its outputs are isolated below the configured artifact root."),
         markdown("## 1. Environment and experiment settings\n\n"
-                 "Create the environment once with `conda env create -f environment.yml`, then register the kernel "
-                 "with `python -m ipykernel install --user --name mtrlearn --display-name \"Python (mtrlearn CUDA)\"` "
-                 "inside the activated environment. Do not install packages into a running notebook kernel."),
+                 "Use the repository's shared `.venv` environment with Python 3.14 and PyTorch CUDA 13.0. "
+                 "Run `scripts/setup_mtrlearn.ps1` from the repository root to install the shared requirements "
+                 "and register the `mtrlearn` kernel. Do not install packages into a running notebook kernel."),
         code('''from pathlib import Path
 import os
 import sys
 import json
 
-ROOT = Path.cwd().resolve()
-if not (ROOT / "src").is_dir():
-    ROOT = ROOT.parent
-if not (ROOT / "src" / "recognition").is_dir():
-    raise RuntimeError("Open this notebook from the repository or notebooks directory.")
-sys.path.insert(0, str(ROOT))
+START_DIRECTORY = Path.cwd().resolve()
+ROOT = next((candidate for candidate in (START_DIRECTORY, *START_DIRECTORY.parents)
+             if (candidate / "src" / "recognition").is_dir()), None)
+if ROOT is None:
+    raise RuntimeError("Open this notebook from a directory inside the repository.")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 import pandas as pd
@@ -47,15 +48,19 @@ from src.recognition.notebook_utils import processing_preview, pilot_runtime, sm
 print("Python:", sys.executable)
 print("PyTorch:", torch.__version__, "CUDA runtime:", torch.version.cuda)
 if not torch.cuda.is_available():
-    raise RuntimeError("Select the mtrlearn CUDA kernel before running training.")
+    raise RuntimeError("Select the Python (FaceGuard CUDA 13.0) kernel before running training.")
 print("GPU:", torch.cuda.get_device_name(0))'''),
         code(f'''SMOKE_TEST = os.environ.get("MTRLEARN_SMOKE", "0") == "1"
 RUN_FINAL_TEST = False  # Enable only after the margin-selection design is fixed.
+ARTIFACTS_ROOT = Path(os.environ.get("MTRLEARN_ARTIFACTS_ROOT", str(ROOT / "artifacts" / "main-cu130")))
+if not ARTIFACTS_ROOT.is_absolute():
+    ARTIFACTS_ROOT = ROOT / ARTIFACTS_ROOT
+ARTIFACTS_ROOT = ARTIFACTS_ROOT.resolve()
 
 CONFIG = ExperimentConfig(
     method="{method}",
     data_root=ROOT / "data" / "VGGFace2",
-    artifacts_root=ROOT / "artifacts",
+    artifacts_root=ARTIFACTS_ROOT,
     identities_per_batch=8,
     images_per_identity=4,
     epochs=60,
@@ -146,6 +151,8 @@ display(pd.Series(json.loads((Path(CONFIG.artifacts_root) / "shared" / "runtime_
                  "AdamW peak LR 3e-4, five-epoch warmup, cosine decay, maximum 60 epochs and dev-only early stopping. "
                  "Three margins are screened at seed 42; the selected margin is repeated at seeds 123 and 2026. "
                  "Completed runs are reused; interrupted runs resume at the last completed epoch. "
+                 "The default artifact root is `artifacts/main-cu130/`; set `MTRLEARN_ARTIFACTS_ROOT` before launching "
+                 "the kernel to choose another root. Existing CUDA 12.8 runs remain separate. "
                  "Change the artifact root when changing scientific settings; mismatched resume configurations are rejected. "
                  "The final test is not used during this cell."),
         code('''sweep_val = run_sweep(CONFIG, prepared)
@@ -180,10 +187,17 @@ else:
                  "[OpenMMLab angular fallback](https://github.com/open-mmlab/mmpretrain/blob/main/mmpretrain/models/heads/margin_head.py)."),
     ]
     notebook = nbformat.v4.new_notebook(cells=cells, metadata={
-        "kernelspec": {"name": "mtrlearn", "display_name": "Python (mtrlearn CUDA)", "language": "python"},
-        "language_info": {"name": "python", "version": "3.11"},
+        "kernelspec": {"name": "mtrlearn", "display_name": "Python (FaceGuard CUDA 13.0)", "language": "python"},
+        "language_info": {"name": "python", "version": "3.14"},
     })
-    path = ROOT / "notebooks" / filename
+    path = ROOT / "notebooks" / "metrics-learn" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        previous = nbformat.read(path, as_version=4)
+        if len(previous.cells) == len(notebook.cells):
+            for old_cell, new_cell in zip(previous.cells, notebook.cells):
+                if old_cell.cell_type == new_cell.cell_type and "id" in old_cell:
+                    new_cell.id = old_cell.id
     nbformat.write(notebook, path)
     print(path)
 

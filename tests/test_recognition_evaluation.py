@@ -56,6 +56,12 @@ def test_all_tied_can_reject_everything_with_finite_threshold():
     assert metrics["eer"] == pytest.approx(0.5)
 
 
+def test_auc_does_not_require_removed_numpy_trapz(monkeypatch):
+    monkeypatch.delattr(np, "trapz", raising=False)
+    embeddings, pairs = _pairs([0.9, 0.8], [0.2, 0.1])
+    assert verification_metrics(embeddings, pairs)["auc"] == pytest.approx(1.0)
+
+
 def test_frozen_dev_threshold_is_not_recalibrated_on_test():
     dev_embeddings, dev_pairs = _pairs([0.9], [0.8])
     dev = verification_metrics(dev_embeddings, dev_pairs, target_fmr=0)

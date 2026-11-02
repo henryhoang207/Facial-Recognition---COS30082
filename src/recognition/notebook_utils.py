@@ -15,7 +15,7 @@ from .config import ExperimentConfig
 from .data import FaceDataset, PreparedData, PKBatchSampler, make_loader
 from .losses import ArcFaceHead, TripletMetricLoss
 from .models import IResNet34
-from .training import configure_runtime, environment_details, seed_everything, write_json
+from .training import configure_runtime, environment_compatibility, environment_details, seed_everything, write_json
 
 
 def processing_preview(prepared: PreparedData, data_root: Path, output_path: Path):
@@ -85,13 +85,19 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
     device = configure_runtime(config)
     records = []
     profile_path = Path(config.artifacts_root) / "shared" / "runtime_pilot.json"
+    compatibility = environment_compatibility()
+    previous_profile = None
+    if profile_path.exists():
+        import json
+        previous_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        if previous_profile.get("environment_compatibility") != compatibility:
+            raise ValueError("Runtime pilot environment changed or compatibility metadata is missing. Use a new artifact root.")
     existing_runs = any(Path(config.artifacts_root).glob("*/runs/*/weights/last.pt"))
     if existing_runs and not profile_path.exists():
         raise RuntimeError("Existing checkpoints have no shared pilot profile. Use a new artifact root.")
     locked_profile = None
     if existing_runs:
-        import json
-        locked_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        locked_profile = previous_profile
         if locked_profile["K"] != config.images_per_identity:
             raise ValueError("The existing comparison uses a different K. Use a new artifact root.")
     choices = [locked_profile["P"] if locked_profile else config.identities_per_batch]
@@ -158,6 +164,7 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
         if success:
             write_json(profile_path, {
                 "environment": environment_details(device), "records": records,
+                "environment_compatibility": compatibility,
                 "selected_batch_size": candidate.batch_size, "P": identities_per_batch,
                 "K": config.images_per_identity, "scope": "Two bounded optimization steps per objective; not a trained model.",
             })
