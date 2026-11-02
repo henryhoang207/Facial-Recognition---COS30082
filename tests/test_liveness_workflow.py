@@ -275,8 +275,11 @@ def test_extracted_folder_staging_rejects_missing_files_and_low_disk(
     build_archive(tmp_path)
     source = tmp_path / "source"
     (source / "Data/train/1/live/face_BB.txt").unlink()
-    with pytest.raises(FileNotFoundError, match="upload is incomplete"):
+    with pytest.raises(FileNotFoundError, match="dataset file unavailable"):
         stage_directory(source, tmp_path / "missing", reserve_bytes=0)
+    failure = json.loads((tmp_path / "missing/staging_failure.json").read_text())
+    assert failure["expected_file"].endswith("face_BB.txt")
+    assert failure["visible_directories"][0]["entries_sample"] == ["face.png"]
     from types import SimpleNamespace
 
     monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=1))

@@ -95,7 +95,17 @@ code("""
         directory.mkdir(parents=True, exist_ok=True)
 
     def command(*args):
-        subprocess.run([str(arg) for arg in args], cwd=REPO, check=True)
+        from collections import deque
+        tail = deque(maxlen=40)
+        with subprocess.Popen([str(arg) for arg in args], cwd=REPO,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, bufsize=1) as process:
+            for line in process.stdout:
+                print(line, end='', flush=True)
+                tail.append(line)
+            code = process.wait()
+        if code:
+            raise RuntimeError('Command failed with exit code ' + str(code) + ':\\n' + ''.join(tail))
 
     if not REPO.exists():
         if SOURCE_ZIP.exists():

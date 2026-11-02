@@ -97,7 +97,45 @@ def stage_directory(
         if not source_path.is_relative_to(source):
             raise ValueError(f"catalog path escapes source folder: {name}")
         if not source_path.is_file():
-            raise FileNotFoundError(f"dataset upload is incomplete; missing {name}")
+            observations = []
+            for parent in [source_path.parent, *source_path.parents]:
+                if parent == source.parent:
+                    break
+                if parent.is_dir() and parent.is_relative_to(source):
+                    from itertools import islice
+
+                    observations.append(
+                        {
+                            "directory": str(parent),
+                            "entries_sample": [
+                                item.name for item in islice(parent.iterdir(), 20)
+                            ],
+                        }
+                    )
+                    if len(observations) == 3:
+                        break
+            report = root / "staging_failure.json"
+            report.write_text(
+                json.dumps(
+                    {
+                        "expected_file": str(source_path),
+                        "source": str(source),
+                        "visible_directories": observations,
+                        "note": (
+                            "Catalog path is unavailable. Check upload, mount "
+                            "and layout; no rows were skipped."
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            raise FileNotFoundError(
+                f"dataset file unavailable: {name}. "
+                "Check the Drive upload, mounted folder and catalog layout. "
+                f"Directory samples saved in {report}. "
+                "No evaluation rows were skipped."
+            )
         size, modified = source_path.stat().st_size, source_path.stat().st_mtime_ns
         entries.append((name, size, modified))
         additional += max(0, size - (target.stat().st_size if target.is_file() else 0))
