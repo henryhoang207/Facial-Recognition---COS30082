@@ -1,8 +1,9 @@
-"""Stage just the eligible processed CelebA files from a large ZIP on Drive."""
+"""Stage eligible processed CelebA files from a ZIP or extracted Drive folder."""
 
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import stat
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,101 @@ def _extract(archive, member, destination):
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _copy_member(source: Path, target: Path) -> None:
+    """Copy atomically, preserving metadata so interrupted staging can resume."""
+    before = source.stat()
+    if target.is_file():
+        existing = target.stat()
+        if (existing.st_size, existing.st_mtime_ns) == (
+            before.st_size,
+            before.st_mtime_ns,
+        ):
+            return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".copying")
+    try:
+        with source.open("rb") as reader, temporary.open("wb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        after = source.stat()
+        if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+            raise RuntimeError(f"source changed during staging: {source}")
+        if temporary.stat().st_size != before.st_size:
+            raise OSError(f"incomplete dataset copy: {source}")
+        os.utime(temporary, ns=(before.st_atime_ns, before.st_mtime_ns))
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def stage_directory(
+    source: Path, root: Path, *, reserve_bytes: int = 5 * 1024**3
+) -> dict:
+    source, root = Path(source).resolve(), Path(root).resolve()
+    if root.is_relative_to(source) or source.is_relative_to(root):
+        raise ValueError("source and staging directories must not overlap")
+    if root.is_relative_to(Path("/content/drive").resolve()):
+        raise ValueError("stage to local Colab storage, not mounted Drive")
+    database_source = source / "celeba_spoof.duckdb"
+    if not database_source.is_file() or not (source / "Data").is_dir():
+        raise FileNotFoundError("dataset folder needs celeba_spoof.duckdb and Data/")
+    root.mkdir(parents=True, exist_ok=True)
+    if database_source.stat().st_size + reserve_bytes > shutil.disk_usage(root).free:
+        raise OSError("not enough local disk space to inspect the source database")
+    database = root / "celeba_spoof.duckdb"
+    _copy_member(database_source, database)
+    with duckdb.connect(str(database), read_only=True) as connection:
+        paths = connection.execute(
+            "SELECT path FROM celeba_labels WHERE split IN ('train','test') "
+            "AND spoof_type IN (0,1,2,3,7,8,9) ORDER BY path"
+        ).fetchall()
+    names = {"celeba_spoof.duckdb"}
+    for (relative,) in paths:
+        relative = str(relative).replace("\\", "/")
+        path = PurePosixPath(relative)
+        if path.is_absolute() or ".." in path.parts or ":" in relative:
+            raise ValueError(f"unsafe catalog path: {relative}")
+        names.update((relative, str(path.with_name(path.stem + "_BB.txt"))))
+    entries, additional, largest = [], 0, 0
+    for name in tqdm(sorted(names), desc="Inspect extracted dataset files"):
+        source_path, target = (source / name).resolve(), root / name
+        if not source_path.is_relative_to(source):
+            raise ValueError(f"catalog path escapes source folder: {name}")
+        if not source_path.is_file():
+            raise FileNotFoundError(f"dataset upload is incomplete; missing {name}")
+        size, modified = source_path.stat().st_size, source_path.stat().st_mtime_ns
+        entries.append((name, size, modified))
+        additional += max(0, size - (target.stat().st_size if target.is_file() else 0))
+        largest = max(largest, size)
+    identity = hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+    marker = root / "staging.json"
+    if marker.is_file():
+        previous = json.loads(marker.read_text())
+        if previous.get("identity") == identity and all(
+            (root / name).is_file()
+            and (root / name).stat().st_size == size
+            and (root / name).stat().st_mtime_ns == modified
+            for name, size, modified in entries
+        ):
+            return previous
+    free = shutil.disk_usage(root).free
+    if additional + largest + reserve_bytes > free:
+        raise OSError(
+            f"selected files need {additional / 1024**3:.1f} GiB more plus reserve; "
+            f"only {free / 1024**3:.1f} GiB free; no evaluation split was reduced"
+        )
+    for name, _, _ in tqdm(entries, desc="Copy live / print / replay locally"):
+        _copy_member(source / name, root / name)
+    result = {
+        "source_type": "directory",
+        "source": str(source),
+        "identity": identity,
+        "selected_files": len(entries),
+        "selected_bytes": sum(row[1] for row in entries),
+    }
+    marker.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
 
 
 def stage_archive(
@@ -159,10 +255,14 @@ def stage_archive(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive", type=Path, required=True)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--source", type=Path, help="extracted folder or ZIP")
+    input_group.add_argument("--archive", type=Path, help="legacy ZIP option")
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(stage_archive(args.archive, args.root), indent=2))
+    source = args.source or args.archive
+    stage = stage_directory if source.is_dir() else stage_archive
+    print(json.dumps(stage(source, args.root), indent=2))
 
 
 if __name__ == "__main__":

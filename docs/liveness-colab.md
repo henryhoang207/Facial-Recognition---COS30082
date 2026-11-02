@@ -13,13 +13,15 @@ are deferred. This repository contains no fabricated training metrics or final w
    to that folder named `FaceGuard` directly under their own My Drive. The
    notebook checks the existing group location first and never creates a separate
    personal FaceGuard folder when the group folder cannot be found.
-2. Open [CelebA_Spoof_processed.zip](https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view)
-   and use **Organize > Add shortcut > My Drive**, retaining its filename. This
-   makes the existing ZIP accessible to Colab without copying it. The notebook
-   also accepts an existing shortcut under the group's `data/` folder or the
-   FaceGuard folder itself. The published branch supplies the code; if using
-   `faceguard_colab_source.zip` instead, place it in the group's FaceGuard folder.
-3. Run setup, archive staging and manifest preparation. These stages may run on
+2. The [extracted CelebA_Spoof_processed folder](https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa)
+   is at `My Drive/COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed`.
+   The notebook uses it directly as the source and skips unzipping. Other members
+   can add a shortcut to this folder named `CelebA_Spoof_processed` under My Drive.
+   It must contain `celeba_spoof.duckdb` and `Data/`. Existing ZIP shortcuts are
+   supported as a fallback. The published branch supplies the code; if using
+   `faceguard_colab_source.zip` instead, place the updated bundle in the group's
+   FaceGuard folder.
+3. Run setup, dataset staging and manifest preparation. These stages may run on
    a CPU runtime to conserve free GPU quota. They require substantial disk and I/O.
 4. Inspect the crop grid and exclusion log. Set `CROPS_REVIEWED=True` only after
    confirming the boxes. Explain any differences from the reference split counts.
@@ -35,12 +37,24 @@ records its exact commit and content hashes.
 
 ## Data protocol
 
-The archive is 42.7 GB. Staging checks its central directory and available disk,
-extracts the DuckDB catalog, and selects live, print and replay images plus their
-bounding boxes. It copies the ZIP locally only if the compressed and selected
-uncompressed files fit together with a reserve. Otherwise it extracts selected
-files directly from the mounted archive. Insufficient space fails with a clear
-message; evaluation data is never silently subsampled.
+The preferred source is the extracted folder uploaded to Drive. Staging first
+copies its DuckDB catalog locally, selects live, print and replay images and
+bounding boxes, verifies that required files are present, and checks disk space.
+Only those selected files are copied to Colab's local disk. Atomic file copies
+and preserved size/modification metadata allow interrupted staging to reuse
+completed copies in the same runtime. Folder inspection and copying can take
+substantial time because Drive contains many small files. Source data on Drive
+remains unchanged; model training does not repeatedly read images from Drive.
+
+ZIP inputs still work: staging inspects the central directory and extracts only
+the selected files. It copies the ZIP locally only if the compressed and selected
+uncompressed data fit together with a reserve. Insufficient space or missing
+uploaded files fails with a clear message; evaluation data is never silently
+subsampled. Both input types share the same manifest and training protocol.
+
+```text
+python -m src.liveness.archive --source EXTRACTED_DATASET_FOLDER --root LOCAL_DATA
+```
 
 The processed four-entry annotation vectors are not the original 44-entry vectors.
 The exporter reads named DuckDB columns. `is_spoof=0` becomes training label 1
@@ -55,7 +69,7 @@ takes precedence over training. All rejected rows and reasons are saved. This
 detects exact duplicates, not every possible near-duplicate or recording session.
 
 Historical reference counts are 75,780 train, 13,367 validation and 49,646 test.
-They are not assumed to describe the supplied ZIP until recomputed. New integrity
+They are not assumed to describe the supplied dataset until recomputed. New integrity
 checks can change these counts; explain changes in `data_review.json`.
 
 ## Training configuration and recovery

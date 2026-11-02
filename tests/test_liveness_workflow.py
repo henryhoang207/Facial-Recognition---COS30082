@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.liveness.archive import stage_archive
+from src.liveness.archive import stage_archive, stage_directory
 from src.liveness.config import LivenessConfig, defaults, load_config
 from src.liveness.metrics import eer_threshold, summarize
 from src.liveness.models import build_model
@@ -230,6 +230,69 @@ def test_archive_stages_only_eligible_files_and_rejects_zip_slip(tmp_path):
         stage_archive(archive, tmp_path / "unsafe", reserve_bytes=0)
 
 
+def test_extracted_folder_staging_is_read_only_and_recovers_completed_copies(
+    tmp_path, monkeypatch
+):
+    build_archive(tmp_path)
+    source, target = tmp_path / "source", tmp_path / "staged_folder"
+    before = {
+        path.relative_to(source): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    staged = stage_directory(source, target, reserve_bytes=0)
+    assert staged["source_type"] == "directory" and staged["selected_files"] == 7
+    assert not (target / "Data/train/1/mask/face.png").exists()
+    for path in target.rglob("*"):
+        if path.is_file() and path.name != "staging.json":
+            assert path.read_bytes() == before[path.relative_to(target)]
+    assert stage_directory(source, target, reserve_bytes=0) == staged
+    missing = target / "Data/train/1/print/face.png"
+    missing.unlink()
+    copied = []
+    original = shutil.copyfileobj
+
+    def copy(reader, writer, **kwargs):
+        copied.append(reader.name)
+        return original(reader, writer, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfileobj", copy)
+    assert stage_directory(source, target, reserve_bytes=0) == staged
+    assert copied == [str(source / "Data/train/1/print/face.png")]
+    assert before == {
+        path.relative_to(source): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    with pytest.raises(ValueError, match="must not overlap"):
+        stage_directory(source, source / "nested", reserve_bytes=0)
+    assert not (source / "nested").exists()
+
+
+def test_extracted_folder_staging_rejects_missing_files_and_low_disk(
+    tmp_path, monkeypatch
+):
+    build_archive(tmp_path)
+    source = tmp_path / "source"
+    (source / "Data/train/1/live/face_BB.txt").unlink()
+    with pytest.raises(FileNotFoundError, match="upload is incomplete"):
+        stage_directory(source, tmp_path / "missing", reserve_bytes=0)
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+    with pytest.raises(OSError, match="not enough local disk"):
+        stage_directory(source, tmp_path / "full", reserve_bytes=0)
+
+
+def test_extracted_folder_staging_rejects_catalog_path_traversal(tmp_path):
+    build_archive(tmp_path)
+    source = tmp_path / "source"
+    with duckdb.connect(str(source / "celeba_spoof.duckdb")) as con:
+        con.execute("INSERT INTO celeba_labels VALUES ('../private.png',1,'train',1,1)")
+    with pytest.raises(ValueError, match="unsafe catalog path"):
+        stage_directory(source, tmp_path / "invalid", reserve_bytes=0)
+
+
 def test_validation_selection_needs_actual_laptop_latency(tmp_path):
     paths = []
     for model, acer in (("mobilenetv3", 0.09), ("deeppixbis", 0.08)):
@@ -303,6 +366,35 @@ def test_notebook_resolves_group_outputs_and_separate_dataset_shortcut(
     assert namespace["resolve_drive_locations"](tmp_path) == (group, archive)
     if group_path != "FaceGuard":
         assert not (tmp_path / "FaceGuard").exists()
+
+
+@pytest.mark.parametrize("shortcut", [False, True])
+def test_notebook_prefers_the_extracted_dataset_folder(tmp_path, shortcut):
+    notebook = nbformat.read(ROOT / "notebooks/liveness_training.ipynb", as_version=4)
+    cell = next(
+        cell for cell in notebook.cells if "def resolve_drive_locations(" in cell.source
+    )
+    function = next(
+        node
+        for node in ast.parse(cell.source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_drive_locations"
+    )
+    namespace = {"GROUP_FOLDER_URL": "group-link", "DATASET_URL": "dataset-link"}
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), "drive-setup", "exec"),
+        namespace,
+    )
+    group = tmp_path / "COS30082 - Project/AI/FaceGuard"
+    group.mkdir(parents=True)
+    folder = tmp_path / (
+        "CelebA_Spoof_processed"
+        if shortcut
+        else "COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed"
+    )
+    (folder / "Data").mkdir(parents=True)
+    (folder / "celeba_spoof.duckdb").touch()
+    (tmp_path / "CelebA_Spoof_processed.zip").touch()
+    assert namespace["resolve_drive_locations"](tmp_path) == (group, folder)
 
 
 def test_yaml_and_legacy_cli_preserve_model_defaults(tmp_path):
@@ -398,7 +490,7 @@ def test_processed_public_archive_to_two_models_and_measured_report(tmp_path):
                     "CelebA_Spoof_processed/" + path.relative_to(source).as_posix(),
                 )
     root = tmp_path / "staged_public"
-    stage_archive(archive, root, reserve_bytes=0)
+    stage_directory(source, root, reserve_bytes=0)
     settings = read_yaml(ROOT / "configs/datasets.yaml")
     settings.update(output_dir=str(tmp_path / "manifests"), workers=2)
     settings["liveness"]["root"] = str(root)

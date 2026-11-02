@@ -35,7 +35,7 @@ markdown("""
 
     **Hoan · PyTorch · MobileNetV3-Large versus DeepPixBiS · public data only**
 
-    This notebook stages the supplied processed CelebA-Spoof archive, audits the data,
+    This notebook stages the supplied processed CelebA-Spoof dataset, audits the data,
     runs both pilots, trains resumable models, freezes validation-based choices, evaluates
     the held-out test split and exports measured report sections. Face collection and webcam
     integration are deferred. No trained results are included in this source notebook.
@@ -44,13 +44,15 @@ markdown("""
     1. Outputs use the group's [FaceGuard folder](https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX)
        at `My Drive/COS30082 - Project/AI/FaceGuard`. Other members can add that folder
        as a shortcut named `FaceGuard` directly under their own My Drive.
-    2. Add a shortcut to the dataset file directly under **My Drive**, keeping its filename
-       `CelebA_Spoof_processed.zip`. This does not copy the 42.7 GB archive.
-       [Dataset](https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view).
+    2. The [extracted dataset folder](https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa)
+       is at `My Drive/COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed`.
+       It already contains `celeba_spoof.duckdb` and `Data/train` and `Data/test`.
+       Other members can add this folder as a shortcut named `CelebA_Spoof_processed`
+       under their own My Drive. Existing ZIP shortcuts are accepted as a fallback.
        If using the backup source ZIP, place it inside the group's FaceGuard folder.
     3. Use a GPU runtime for training. Archive preparation can run on a CPU runtime to conserve GPU time.
     4. Review the crop grid before enabling the full runs. Allow substantial staging/training time;
-       the archive is 42.7 GB and free Colab resources vary.
+       many small files must be copied from Drive and free Colab resources vary.
 """)
 code("""
     from pathlib import Path
@@ -60,7 +62,7 @@ code("""
     drive.mount('/content/drive')
     MY_DRIVE = Path('/content/drive/MyDrive')
     GROUP_FOLDER_URL = 'https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX'
-    DATASET_URL = 'https://drive.google.com/file/d/1jJ1gbDXIX-TMj-9dUp006aRiMxqMVrpB/view'
+    DATASET_URL = 'https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa'
 
     def resolve_drive_locations(my_drive):
         group_candidates = [my_drive / 'COS30082 - Project/AI/FaceGuard', my_drive / 'FaceGuard']
@@ -68,14 +70,18 @@ code("""
         if group is None:
             raise FileNotFoundError('Open ' + GROUP_FOLDER_URL + ' and add a shortcut named FaceGuard under My Drive, then rerun this cell.')
         filename = 'CelebA_Spoof_processed.zip'
-        dataset_candidates = [my_drive / filename, group / 'data' / filename,
+        folder_candidates = [my_drive / 'COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed',
+                             my_drive / 'CelebA_Spoof_processed', group / 'data/CelebA_Spoof_processed']
+        dataset_candidates = [*folder_candidates, my_drive / filename, group / 'data' / filename,
                               group / filename, my_drive / 'FaceGuard/data' / filename]
-        dataset = next((path for path in dataset_candidates if path.is_file()), None)
+        dataset = next((path for path in dataset_candidates if (
+            path.is_file() or (path.is_dir() and (path / 'celeba_spoof.duckdb').is_file()
+                              and (path / 'Data').is_dir()))), None)
         if dataset is None:
-            raise FileNotFoundError('Open ' + DATASET_URL + ' and use Organize > Add shortcut > My Drive, keeping the filename. Do not download or copy the ZIP. Then rerun this cell.')
+            raise FileNotFoundError('Open ' + DATASET_URL + ' and add a shortcut named CelebA_Spoof_processed under My Drive. The folder must contain celeba_spoof.duckdb and Data/. Then rerun this cell.')
         return group, dataset
 
-    DRIVE, ARCHIVE = resolve_drive_locations(MY_DRIVE)
+    DRIVE, DATA_SOURCE = resolve_drive_locations(MY_DRIVE)
     SOURCE_ZIP = DRIVE / 'faceguard_colab_source.zip'
     REPO = Path('/content/faceguard')
     REPO_URL = 'https://github.com/henryhoang207/Facial-Recognition---COS30082.git'
@@ -101,12 +107,17 @@ code("""
                 archive.extractall(REPO)
         else:
             subprocess.run(['git', 'clone', '--branch', REPO_REF, REPO_URL, str(REPO)], check=True)
-    if not (REPO / 'src/liveness/archive.py').exists():
+    staging_module = REPO / 'src/liveness/archive.py'
+    if staging_module.exists() and 'def stage_directory(' not in staging_module.read_text() and (REPO / '.git').exists():
+        subprocess.run(['git', 'pull', '--ff-only'], cwd=REPO, check=True)
+    if not staging_module.exists():
         raise RuntimeError('This source checkout lacks the Colab workflow; use the supplied source ZIP or feature branch.')
+    if 'def stage_directory(' not in staging_module.read_text():
+        raise RuntimeError('Replace the backup source ZIP with the updated folder-support version, or use the published feature branch.')
     os.chdir(REPO)
     sys.path.insert(0, str(REPO))
     print('Source:', REPO, '| persistent outputs:', OUT)
-    print('Group folder:', GROUP_FOLDER_URL, '| dataset:', ARCHIVE)
+    print('Group folder:', GROUP_FOLDER_URL, '| dataset:', DATA_SOURCE)
 """)
 markdown("""
     ## Environment
@@ -137,16 +148,18 @@ code("""
     print(environment)
 """)
 markdown("""
-    ## Stage and audit the processed archive
+    ## Stage and audit the processed dataset
 
-    The staging step reads named DuckDB columns, selects live/print/replay files, checks
-    free disk space and archive paths, and extracts locally. It copies the ZIP locally only
-    when both the ZIP and extracted data fit. It never silently shrinks the test set.
+    The extracted-folder path skips unzipping. Staging reads the DuckDB catalog,
+    selects live/print/replay images and bounding boxes, checks free disk space,
+    and copies only those files locally. Completed file copies are reused after
+    an interruption in the same runtime. Source files on Drive remain unchanged.
+    ZIP inputs still work as a fallback. No evaluation split is silently reduced.
 """)
 code("""
-    if not ARCHIVE.exists():
-        raise FileNotFoundError(f'Add the dataset shortcut or update ARCHIVE: {ARCHIVE}')
-    command(sys.executable, '-m', 'src.liveness.archive', '--archive', ARCHIVE, '--root', LOCAL_DATA)
+    if not DATA_SOURCE.exists():
+        raise FileNotFoundError(f'Dataset source is unavailable: {DATA_SOURCE}')
+    command(sys.executable, '-m', 'src.liveness.archive', '--source', DATA_SOURCE, '--root', LOCAL_DATA)
     shutil.copy2(LOCAL_DATA / 'staging.json', OUT / 'staging.json')
     DATA_CONFIG = OUT / 'dataset_config.yaml'
     data_settings = yaml.safe_load((REPO / 'configs/datasets.yaml').read_text())
