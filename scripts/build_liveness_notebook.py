@@ -44,12 +44,12 @@ markdown("""
     1. Outputs use the group's [FaceGuard folder](https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX)
        at `My Drive/COS30082 - Project/AI/FaceGuard`. Other members can add that folder
        as a shortcut named `FaceGuard` directly under their own My Drive.
-    2. The [extracted dataset folder](https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa)
-       is at `My Drive/COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed`.
-       It already contains `celeba_spoof.duckdb` and `Data/train` and `Data/test`.
-       Other members can add this folder as a shortcut named `CelebA_Spoof_processed`
-       under their own My Drive. Existing ZIP shortcuts are accepted as a fallback.
-       If using the backup source ZIP, place it inside the group's FaceGuard folder.
+    2. The [dataset archive folder](https://drive.google.com/drive/folders/1621A1dLEm67_Kwli8AhBNeyQlm-VR3YF)
+       is at `My Drive/COS30082 - Project/Data/anti_spoof` and contains
+       `anti_spoof_part_01.zip` through `anti_spoof_part_12.zip`.
+       These are independent ZIPs: keep all twelve together; do not concatenate them.
+       Other members can add this folder as a shortcut named `anti_spoof` under My Drive.
+       An extracted dataset or the original single ZIP remains supported as a fallback.
     3. Use a GPU runtime for training. Archive preparation can run on a CPU runtime to conserve GPU time.
     4. Review the crop grid before enabling the full runs. Allow substantial staging/training time;
        many small files must be copied from Drive and free Colab resources vary.
@@ -62,7 +62,7 @@ code("""
     drive.mount('/content/drive')
     MY_DRIVE = Path('/content/drive/MyDrive')
     GROUP_FOLDER_URL = 'https://drive.google.com/drive/folders/1vOxqufQJaj1zPhzzUZMdHj6VF3vLCnGX'
-    DATASET_URL = 'https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa'
+    DATASET_URL = 'https://drive.google.com/drive/folders/1621A1dLEm67_Kwli8AhBNeyQlm-VR3YF'
 
     def resolve_drive_locations(my_drive):
         group_candidates = [my_drive / 'COS30082 - Project/AI/FaceGuard', my_drive / 'FaceGuard']
@@ -72,13 +72,24 @@ code("""
         filename = 'CelebA_Spoof_processed.zip'
         folder_candidates = [my_drive / 'COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed',
                              my_drive / 'CelebA_Spoof_processed', group / 'data/CelebA_Spoof_processed']
+        archive_folders = [my_drive / 'COS30082 - Project/Data/anti_spoof',
+                           my_drive / 'anti_spoof', group / 'data/anti_spoof_zips']
+        archive_set = next((path for path in archive_folders
+                            if path.is_dir() and any(path.glob('anti_spoof_part_*.zip'))), None)
+        if archive_set is not None:
+            expected_parts = {f'anti_spoof_part_{index:02d}.zip' for index in range(1, 13)}
+            found_parts = {path.name for path in archive_set.glob('anti_spoof_part_*.zip')}
+            if found_parts != expected_parts:
+                raise FileNotFoundError(f'Archive set incomplete at {archive_set}; missing: {sorted(expected_parts-found_parts)}; unexpected: {sorted(found_parts-expected_parts)}. No fallback was selected.')
+            print('Dataset ZIP parts:', sorted(found_parts))
+            return group, archive_set
         dataset_candidates = [*folder_candidates, my_drive / filename, group / 'data' / filename,
                               group / filename, my_drive / 'FaceGuard/data' / filename]
         dataset = next((path for path in dataset_candidates if (
             path.is_file() or (path.is_dir() and (path / 'celeba_spoof.duckdb').is_file()
                               and (path / 'Data').is_dir()))), None)
         if dataset is None:
-            raise FileNotFoundError('Open ' + DATASET_URL + ' and add a shortcut named CelebA_Spoof_processed under My Drive. The folder must contain celeba_spoof.duckdb and Data/. Then rerun this cell.')
+            raise FileNotFoundError('Open ' + DATASET_URL + ' and add a shortcut named anti_spoof under My Drive containing all twelve anti_spoof_part_XX.zip files. Then rerun this cell.')
         return group, dataset
 
     DRIVE, DATA_SOURCE = resolve_drive_locations(MY_DRIVE)
@@ -118,12 +129,12 @@ code("""
         else:
             subprocess.run(['git', 'clone', '--branch', REPO_REF, REPO_URL, str(REPO)], check=True)
     staging_module = REPO / 'src/liveness/archive.py'
-    if staging_module.exists() and 'def stage_directory(' not in staging_module.read_text() and (REPO / '.git').exists():
+    if staging_module.exists() and 'def stage_archive_set(' not in staging_module.read_text() and (REPO / '.git').exists():
         subprocess.run(['git', 'pull', '--ff-only'], cwd=REPO, check=True)
     if not staging_module.exists():
         raise RuntimeError('This source checkout lacks the Colab workflow; use the supplied source ZIP or feature branch.')
-    if 'def stage_directory(' not in staging_module.read_text():
-        raise RuntimeError('Replace the backup source ZIP with the updated folder-support version, or use the published feature branch.')
+    if 'def stage_archive_set(' not in staging_module.read_text():
+        raise RuntimeError('Replace the backup source ZIP with the updated twelve-ZIP version, or use the published feature branch.')
     os.chdir(REPO)
     sys.path.insert(0, str(REPO))
     print('Source:', REPO, '| persistent outputs:', OUT)
@@ -160,11 +171,12 @@ code("""
 markdown("""
     ## Stage and audit the processed dataset
 
-    The extracted-folder path skips unzipping. Staging reads the DuckDB catalog,
-    selects live/print/replay images and bounding boxes, checks free disk space,
-    and copies only those files locally. Completed file copies are reused after
-    an interruption in the same runtime. Source files on Drive remain unchanged.
-    ZIP inputs still work as a fallback. No evaluation split is silently reduced.
+    The preferred source is the folder containing all twelve independent ZIPs.
+    Staging indexes their contents together, checks the catalog and disk space,
+    and extracts only live/print/replay images and bounding boxes to local storage.
+    It processes one ZIP at a time. CRC-verified local files are reused after interruption.
+    No concatenation or manual extraction is needed. Extracted-folder and single-ZIP
+    inputs remain supported. Missing parts or required test files stop preparation.
 """)
 code("""
     if not DATA_SOURCE.exists():

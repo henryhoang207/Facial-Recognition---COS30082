@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.liveness.archive import stage_archive, stage_directory
+from src.liveness.archive import stage_archive, stage_archive_set, stage_directory
 from src.liveness.config import LivenessConfig, defaults, load_config
 from src.liveness.metrics import eer_threshold, summarize
 from src.liveness.models import build_model
@@ -230,6 +230,109 @@ def test_archive_stages_only_eligible_files_and_rejects_zip_slip(tmp_path):
         stage_archive(archive, tmp_path / "unsafe", reserve_bytes=0)
 
 
+def build_archive_set(tmp_path):
+    single = build_archive(tmp_path)
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    with ZipFile(single) as original:
+        entries = original.infolist()
+        for index in range(12):
+            with ZipFile(parts / f"anti_spoof_part_{index + 1:02d}.zip", "w") as part:
+                part.writestr("CelebA_Spoof_processed/", "")
+                for entry in entries[index::12]:
+                    part.writestr(entry.filename, original.read(entry))
+    return parts
+
+
+def test_archive_set_extracts_across_parts_and_recovers_interruption(
+    tmp_path, monkeypatch
+):
+    from src.liveness import archive as module
+
+    parts = build_archive_set(tmp_path)
+    root = tmp_path / "staged"
+    original = module._extract
+    completed = []
+
+    def interrupt(archive, member, destination):
+        if len(completed) == 3:
+            raise RuntimeError("disconnect")
+        original(archive, member, destination)
+        completed.append(destination)
+
+    with monkeypatch.context() as context:
+        context.setattr(module, "_extract", interrupt)
+        with pytest.raises(RuntimeError, match="disconnect"):
+            stage_archive_set(parts, root, reserve_bytes=0)
+    assert not (root / "staging.json").exists()
+    restored = []
+
+    def extract(archive, member, destination):
+        restored.append(destination)
+        original(archive, member, destination)
+
+    monkeypatch.setattr(module, "_extract", extract)
+    result = stage_archive_set(parts, root, reserve_bytes=0)
+    assert result["source_type"] == "archive_set"
+    assert result["selected_files"] == 7 and len(result["archives"]) == 12
+    assert set(completed).isdisjoint(restored)
+    assert not (root / "Data/train/1/mask/face.png").exists()
+    restored.clear()
+    assert stage_archive_set(parts, root, reserve_bytes=0) == result
+    assert restored == []
+    damaged = root / "Data/train/1/live/face.png"
+    damaged.write_bytes(b"x" * damaged.stat().st_size)
+    assert stage_archive_set(parts, root, reserve_bytes=0) == result
+    assert restored == [damaged]
+    assert (
+        damaged.read_bytes()
+        == (tmp_path / "source/Data/train/1/live/face.png").read_bytes()
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["missing_part", "missing_image", "duplicate", "unsafe", "corrupt", "low_disk"],
+)
+def test_archive_set_rejects_invalid_inputs(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    from zipfile import BadZipFile
+
+    parts = build_archive_set(tmp_path)
+    first = parts / "anti_spoof_part_01.zip"
+    expected_error, message = ValueError, "duplicate ZIP"
+    if failure == "missing_part":
+        first.unlink()
+        expected_error, message = FileNotFoundError, "missing:.*01"
+    elif failure == "missing_image":
+        for part in parts.glob("*.zip"):
+            with ZipFile(part) as archive:
+                entries = [
+                    (info, archive.read(info))
+                    for info in archive.infolist()
+                    if not info.filename.endswith("live/face.png")
+                ]
+            with ZipFile(part, "w") as archive:
+                for info, content in entries:
+                    archive.writestr(info, content)
+        expected_error, message = FileNotFoundError, "lacks required image/bbox"
+    elif failure == "duplicate":
+        with ZipFile(first, "a") as archive:
+            archive.writestr("CelebA_Spoof_processed/Data/train/1/live/face.png", "bad")
+    elif failure == "unsafe":
+        with ZipFile(first, "a") as archive:
+            archive.writestr("../escape", "bad")
+        message = "unsafe ZIP"
+    elif failure == "corrupt":
+        first.write_bytes(b"incomplete upload")
+        expected_error, message = BadZipFile, "zip file"
+    elif failure == "low_disk":
+        monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+        expected_error, message = OSError, "not enough local disk"
+    with pytest.raises(expected_error, match=message):
+        stage_archive_set(parts, tmp_path / "staged", reserve_bytes=0)
+
+
 def test_extracted_folder_staging_is_read_only_and_recovers_completed_copies(
     tmp_path, monkeypatch
 ):
@@ -398,6 +501,39 @@ def test_notebook_prefers_the_extracted_dataset_folder(tmp_path, shortcut):
     (folder / "celeba_spoof.duckdb").touch()
     (tmp_path / "CelebA_Spoof_processed.zip").touch()
     assert namespace["resolve_drive_locations"](tmp_path) == (group, folder)
+
+
+@pytest.mark.parametrize("shortcut", [False, True])
+def test_notebook_prioritizes_complete_archive_set_and_rejects_missing_parts(
+    tmp_path, shortcut
+):
+    notebook = nbformat.read(ROOT / "notebooks/liveness_training.ipynb", as_version=4)
+    cell = next(
+        cell for cell in notebook.cells if "def resolve_drive_locations(" in cell.source
+    )
+    function = next(
+        node
+        for node in ast.parse(cell.source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_drive_locations"
+    )
+    namespace = {"GROUP_FOLDER_URL": "group-link", "DATASET_URL": "dataset-link"}
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), "drive-setup", "exec"),
+        namespace,
+    )
+    group = tmp_path / "FaceGuard"
+    group.mkdir()
+    folder = tmp_path / (
+        "anti_spoof" if shortcut else "COS30082 - Project/Data/anti_spoof"
+    )
+    folder.mkdir(parents=True)
+    (tmp_path / "CelebA_Spoof_processed.zip").touch()
+    for index in range(1, 13):
+        (folder / f"anti_spoof_part_{index:02d}.zip").touch()
+    assert namespace["resolve_drive_locations"](tmp_path) == (group, folder)
+    (folder / "anti_spoof_part_12.zip").unlink()
+    with pytest.raises(FileNotFoundError, match="Archive set incomplete.*12"):
+        namespace["resolve_drive_locations"](tmp_path)
 
 
 def test_yaml_and_legacy_cli_preserve_model_defaults(tmp_path):

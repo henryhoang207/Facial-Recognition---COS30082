@@ -6,11 +6,140 @@ import json
 import os
 import shutil
 import stat
+import zlib
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
 import duckdb
 from tqdm.auto import tqdm
+
+
+def _matches_member(path: Path, member) -> bool:
+    """Verify completed files before reusing them, including after an interruption."""
+    if not path.is_file() or path.stat().st_size != member.file_size:
+        return False
+    checksum = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum = zlib.crc32(chunk, checksum)
+    return checksum == member.CRC
+
+
+def stage_archive_set(
+    source: Path, root: Path, *, reserve_bytes: int = 5 * 1024**3
+) -> dict:
+    """Stage the twelve independent ZIPs without joining or expanding all data."""
+    source, root = Path(source).resolve(), Path(root).resolve()
+    if root.is_relative_to(source) or source.is_relative_to(root):
+        raise ValueError("source and staging directories must not overlap")
+    if root.is_relative_to(Path("/content/drive").resolve()):
+        raise ValueError("stage to local Colab storage, not mounted Drive")
+    expected = [f"anti_spoof_part_{index:02d}.zip" for index in range(1, 13)]
+    found = {path.name for path in source.glob("anti_spoof_part_*.zip")}
+    if found != set(expected):
+        raise FileNotFoundError(
+            f"archive set needs parts 01–12; missing: {sorted(set(expected) - found)}; "
+            f"unexpected: {sorted(found - set(expected))}"
+        )
+    members, archives = {}, []
+    for filename in tqdm(expected, desc="Inspect dataset ZIP parts"):
+        path = source / filename
+        with ZipFile(path) as archive:
+            infos = archive.infolist()
+            for info in infos:
+                name = safe_name(info)
+                if info.is_dir():
+                    continue
+                if name in members:
+                    raise ValueError(f"duplicate ZIP member across archive set: {name}")
+                if info.flag_bits & 1:
+                    raise ValueError(f"encrypted ZIP member unsupported: {name}")
+                members[name] = (filename, info)
+            archives.append(
+                {
+                    "name": filename,
+                    "bytes": path.stat().st_size,
+                    "uncompressed_bytes": sum(info.file_size for info in infos),
+                }
+            )
+    databases = [
+        name for name in members if PurePosixPath(name).name == "celeba_spoof.duckdb"
+    ]
+    if len(databases) != 1:
+        raise ValueError("expected exactly one celeba_spoof.duckdb across archive set")
+    database_name = databases[0]
+    prefix = database_name.removesuffix("celeba_spoof.duckdb")
+    root.mkdir(parents=True, exist_ok=True)
+    database = root / "celeba_spoof.duckdb"
+    filename, info = members[database_name]
+    if info.file_size + reserve_bytes > shutil.disk_usage(root).free:
+        raise OSError("not enough local disk space to inspect the source database")
+    if not _matches_member(database, info):
+        with ZipFile(source / filename) as archive:
+            _extract(archive, info, database)
+    with duckdb.connect(str(database), read_only=True) as connection:
+        paths = connection.execute(
+            "SELECT path FROM celeba_labels WHERE split IN ('train','test') "
+            "AND spoof_type IN (0,1,2,3,7,8,9) ORDER BY path"
+        ).fetchall()
+    destinations = {database_name: database}
+    for (relative,) in paths:
+        relative = str(relative).replace("\\", "/")
+        path = PurePosixPath(relative)
+        if path.is_absolute() or ".." in path.parts or ":" in relative:
+            raise ValueError(f"unsafe catalog path: {relative}")
+        for item in (relative, str(path.with_name(path.stem + "_BB.txt"))):
+            name = prefix + item
+            if name not in members:
+                raise FileNotFoundError(
+                    f"archive set lacks required image/bbox: {name}; "
+                    "no rows were skipped"
+                )
+            destinations[name] = root / item
+    identity = hashlib.sha256(
+        json.dumps(
+            [
+                (name, filename, info.CRC, info.file_size)
+                for name, (filename, info) in sorted(members.items())
+            ]
+        ).encode()
+    ).hexdigest()
+    pending = []
+    for name, target in tqdm(destinations.items(), desc="Verify reusable local files"):
+        if not _matches_member(target, members[name][1]):
+            pending.append(name)
+    required = sum(members[name][1].file_size for name in pending)
+    largest = max((members[name][1].file_size for name in pending), default=0)
+    free = shutil.disk_usage(root).free
+    if required + largest + reserve_bytes > free:
+        raise OSError(
+            f"selected data needs {required / 1024**3:.1f} GiB plus reserve; "
+            f"only {free / 1024**3:.1f} GiB free; no evaluation split was reduced"
+        )
+    # Open one part at a time and keep reads in archive order. Never concatenate ZIPs.
+    for filename in expected:
+        selected = sorted(
+            (name for name in pending if members[name][0] == filename),
+            key=lambda name: members[name][1].header_offset,
+        )
+        if not selected:
+            continue
+        with ZipFile(source / filename) as archive:
+            for name in tqdm(selected, desc=f"Extract {filename}"):
+                _extract(archive, members[name][1], destinations[name])
+    result = {
+        "source_type": "archive_set",
+        "source": str(source),
+        "identity": identity,
+        "archives": archives,
+        "selected_files": len(destinations),
+        "selected_bytes": sum(members[name][1].file_size for name in destinations),
+    }
+    marker = root / "staging.json"
+    temporary = root / "staging.json.tmp"
+    temporary.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    temporary.replace(marker)
+    return result
 
 
 def safe_name(info) -> str:
@@ -299,7 +428,10 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
     source = args.source or args.archive
-    stage = stage_directory if source.is_dir() else stage_archive
+    if source.is_dir() and any(source.glob("anti_spoof_part_*.zip")):
+        stage = stage_archive_set
+    else:
+        stage = stage_directory if source.is_dir() else stage_archive
     print(json.dumps(stage(source, args.root), indent=2))
 
 

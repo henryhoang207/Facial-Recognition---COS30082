@@ -13,14 +13,14 @@ are deferred. This repository contains no fabricated training metrics or final w
    to that folder named `FaceGuard` directly under their own My Drive. The
    notebook checks the existing group location first and never creates a separate
    personal FaceGuard folder when the group folder cannot be found.
-2. The [extracted CelebA_Spoof_processed folder](https://drive.google.com/drive/folders/1D3b5u61grPype3UDh5Jn5phbrX4Bl5Xa)
-   is at `My Drive/COS30082 - Project/Data/anti_spoof/CelebA_Spoof_processed`.
-   The notebook uses it directly as the source and skips unzipping. Other members
-   can add a shortcut to this folder named `CelebA_Spoof_processed` under My Drive.
-   It must contain `celeba_spoof.duckdb` and `Data/`. Existing ZIP shortcuts are
-   supported as a fallback. The published branch supplies the code; if using
-   `faceguard_colab_source.zip` instead, place the updated bundle in the group's
-   FaceGuard folder.
+2. The [dataset folder](https://drive.google.com/drive/folders/1621A1dLEm67_Kwli8AhBNeyQlm-VR3YF)
+   is at `My Drive/COS30082 - Project/Data/anti_spoof` and contains all twelve
+   `anti_spoof_part_01.zip` through `anti_spoof_part_12.zip` files. These ZIPs
+   open independently: do not concatenate them. Other members can add the folder
+   as a shortcut named `anti_spoof` under My Drive. This archive set takes priority
+   over older extracted folders. Missing parts stop setup rather than silently
+   selecting an older source. The published branch supplies the code; updated
+   `faceguard_colab_source.zip` bundles also work from the group FaceGuard folder.
 3. Run setup, dataset staging and manifest preparation. These stages may run on
    a CPU runtime to conserve free GPU quota. They require substantial disk and I/O.
 4. Inspect the crop grid and exclusion log. Set `CROPS_REVIEWED=True` only after
@@ -37,23 +37,27 @@ records its exact commit and content hashes.
 
 ## Data protocol
 
-The preferred source is the extracted folder uploaded to Drive. Staging first
-copies its DuckDB catalog locally, selects live, print and replay images and
-bounding boxes, verifies that required files are present, and checks disk space.
-Only those selected files are copied to Colab's local disk. Atomic file copies
-and preserved size/modification metadata allow interrupted staging to reuse
-completed copies in the same runtime. Folder inspection and copying can take
-substantial time because Drive contains many small files. Source data on Drive
-remains unchanged; model training does not repeatedly read images from Drive.
+The preferred source is the folder containing the twelve independent ZIPs.
+Staging indexes all central directories, rejects unsafe or duplicate file paths,
+locates exactly one DuckDB catalog, and verifies that every selected live, print
+and replay image and bounding box exists across the combined set before extraction.
+Repeated directory entries are allowed. Encrypted files are rejected.
 
-ZIP inputs still work: staging inspects the central directory and extracts only
-the selected files. It copies the ZIP locally only if the compressed and selected
-uncompressed data fit together with a reserve. Insufficient space or missing
-uploaded files fails with a clear message; evaluation data is never silently
-subsampled. Both input types share the same manifest and training protocol.
+Selected files are extracted locally in archive order, one ZIP at a time. ZIPs
+are read from mounted Drive without creating another 42.7 GB copy. Disk-space checks
+include a reserve and temporary extraction space. Atomic file replacement and CRC
+verification of existing local files support recovery after interruption, including
+repair of a same-size damaged local file. Reading a selected archive member verifies
+its ZIP CRC. Unselected image contents are not decompressed or CRC-tested; full
+selected-image decoding and hashing follow during the dataset audit.
+
+`staging.json` records all part names, compressed/uncompressed sizes, the combined
+member-index fingerprint and selected counts. Source files remain unchanged.
+An extracted folder or the original single ZIP remains supported. All inputs share
+the same manifest and training protocol; missing evaluation files never reduce test.
 
 ```text
-python -m src.liveness.archive --source EXTRACTED_DATASET_FOLDER --root LOCAL_DATA
+python -m src.liveness.archive --source FOLDER_WITH_12_ZIPS --root LOCAL_DATA
 ```
 
 The processed four-entry annotation vectors are not the original 44-entry vectors.
