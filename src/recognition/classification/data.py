@@ -12,13 +12,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
 
 from src.common.face_crop import crop_face
 from src.training import seed_worker
 
+from .augmentation import FaceBatchTransform
 from .config import PreprocessConfig, RecognitionConfig
 
 
@@ -36,28 +35,15 @@ class FaceRecord:
 class FaceTransform:
     def __init__(self, config: PreprocessConfig, *, train: bool = False):
         self.size = config.size
-        operations = []
-        if train:
-            operations.extend(
-                [
-                    transforms.RandomHorizontalFlip(config.horizontal_flip),
-                    transforms.ColorJitter(brightness=config.brightness),
-                ]
-            )
-        operations.extend(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(config.mean, config.std),
-            ]
-        )
-        self.transform = transforms.Compose(operations)
+        self.transform = FaceBatchTransform(config).train(train)
 
     def __call__(self, face: np.ndarray) -> torch.Tensor:
         if face.dtype != np.uint8 or face.shape != (self.size, self.size, 3):
             raise ValueError(
                 f"expected BGR uint8 crop of shape ({self.size}, {self.size}, 3)"
             )
-        return self.transform(Image.fromarray(cv2.cvtColor(face, cv2.COLOR_BGR2RGB)))
+        rgb = torch.from_numpy(cv2.cvtColor(face, cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
+        return self.transform(rgb.unsqueeze(0))[0]
 
 
 class FaceDataset(Dataset):
@@ -68,24 +54,37 @@ class FaceDataset(Dataset):
         config: PreprocessConfig,
         *,
         train: bool,
+        raw: bool = False,
     ):
         self.records = records
         self.class_to_idx = class_to_idx
         self.config = config
-        self.transform = FaceTransform(config, train=train)
+        # Raw decoder workers carry no tensor buffers or device transforms.
+        self.transform = None if raw else FaceTransform(config, train=train)
+        self.raw = raw
+        self.cached_images: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int):
         record = self.records[index]
+        if self.cached_images is not None:
+            return self.cached_images[index], self.class_to_idx[record.identity]
         frame = cv2.imread(str(record.path))
         if frame is None:
             raise ValueError(f"cannot decode image: {record.path}")
         height, width = frame.shape[:2]
         box = record.box or (0, 0, width, height)
         face = crop_face(frame, box, self.config.size, self.config.crop_scale)
-        return self.transform(face), self.class_to_idx[record.identity]
+        image = (
+            torch.from_numpy(cv2.cvtColor(face, cv2.COLOR_BGR2RGB))
+            .permute(2, 0, 1)
+            .contiguous()
+            if self.raw
+            else self.transform(face)
+        )
+        return image, self.class_to_idx[record.identity]
 
 
 def read_records(config: RecognitionConfig) -> list[FaceRecord]:
@@ -180,12 +179,18 @@ def make_loaders(
         loaders.append(
             DataLoader(
                 FaceDataset(
-                    by_split[split], mapping, config.preprocess, train=split == "train"
+                    by_split[split],
+                    mapping,
+                    config.preprocess,
+                    train=split == "train",
+                    raw=True,
                 ),
                 batch_size=config.training.batch_size,
                 shuffle=split == "train",
                 num_workers=config.training.num_workers,
-                pin_memory=config.training.device != "cpu",
+                pin_memory=(
+                    config.training.device != "cpu" and torch.cuda.is_available()
+                ),
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=False,

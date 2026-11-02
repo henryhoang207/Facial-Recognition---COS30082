@@ -1,10 +1,14 @@
 """Train A/C without changing another recognition owner's modules."""
 
+import gc
 import importlib
 import json
 import shutil
+import warnings
 from datetime import date
 from pathlib import Path
+
+import torch
 
 from src.training import (
     Trainer,
@@ -15,6 +19,7 @@ from src.training import (
 )
 from src.training.config import resolve_device
 
+from .cache import cache_loaders
 from .config import RecognitionConfig, load_config
 from .data import make_loaders
 from .models import ClassificationModel
@@ -40,15 +45,55 @@ def build_evaluator(config: RecognitionConfig):
 
 
 def train(config: RecognitionConfig, *, resume: Path | None = None):
+    directory = new_run_dir(config.output_dir, f"recognition_{config.model.variant}")
+    pipeline = {}
+    try:
+        return _train_once(config, resume, directory, pipeline, cache_allowed=True)
+    except torch.cuda.OutOfMemoryError:
+        if pipeline.get("mode") != "cuda":
+            raise
+        warnings.warn(
+            "CUDA ran out of memory with cached crops. Releasing the cache and "
+            "retrying with batch streaming from the last completed epoch, or "
+            "the original initialization if no epoch was saved.",
+            stacklevel=2,
+        )
+    # Leave the exception scope first to release its traceback and live CUDA tensors.
+    gc.collect()
+    torch.cuda.empty_cache()
+    last = directory / "last.pt"
+    (directory / "data_pipeline.json").write_text(
+        json.dumps({**pipeline, "outcome": "training_cuda_oom"}, indent=2),
+        encoding="utf-8",
+    )
+    return _train_once(
+        config,
+        last if last.exists() else resume,
+        new_run_dir(config.output_dir, f"recognition_{config.model.variant}_streaming"),
+        pipeline,
+        cache_allowed=False,
+    )
+
+
+def _train_once(config, resume, directory, pipeline, *, cache_allowed):
     evaluator = build_evaluator(config)
     seed_everything(config.training.seed, config.training.deterministic)
     train_loader, val_loader, mapping = make_loaders(config)
     task = RecognitionTask(
         ClassificationModel(
             config.model, len(mapping), load_initial_weights=resume is None
-        )
+        ),
+        config.preprocess,
     ).to(resolve_device(config.training.device))
     optimizer = make_optimizer(task, config.training)
+    (train_loader, val_loader), report = cache_loaders(
+        (train_loader, val_loader),
+        config,
+        next(task.parameters()).device,
+        allowed=cache_allowed,
+    )
+    pipeline.update(report)
+    print(json.dumps({"data_pipeline": report}))
     metadata = {
         "task": "recognition_classification",
         "model_config": config.model.model_dump(mode="json"),
@@ -76,7 +121,6 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
             for name, loader in (("train", train_loader), ("val", val_loader))
         },
     }
-    directory = new_run_dir(config.output_dir, f"recognition_{config.model.variant}")
     trainer = Trainer(
         task,
         optimizer,
@@ -87,6 +131,9 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
         evaluator=evaluator,
     )
     result = trainer.fit(train_loader, val_loader, resume=resume)
+    (directory / "data_pipeline.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
     (directory / "resolved_config.json").write_text(
         config.model_dump_json(indent=2), encoding="utf-8"
     )

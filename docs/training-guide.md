@@ -70,6 +70,8 @@ Start from the configuration for that task:
 
 Recognition configurations have `model`, `preprocess`, `data`, `training`, `verification`, `output_dir`, and `evaluator` sections. The shared trainer consumes `TrainingConfig`; the task's entry point owns the other sections. A configuration for one entry point is not automatically valid for another.
 
+Recognition A and C apply batch augmentation on the model device and can cache unaugmented crops in VRAM. See [GPU augmentation and VRAM caching](recognition-training.md#configure-gpu-augmentation-and-vram-caching) for configuration, automatic fallback, and commands. Other tasks define their own preprocessing.
+
 For a new task, keep all shared fields from the example's `training` section. Replace its synthetic dataset settings and `RegressionTask` with that task's data loader and objective. Use `parameter_groups: []` until you define module groups for the new task.
 
 For recognition, check these YAML sections:

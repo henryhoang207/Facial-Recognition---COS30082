@@ -12,12 +12,19 @@ preprocess:
   std: [0.5, 0.5, 0.5]
   horizontal_flip: 0.5
   brightness: 0.1
+  contrast: 0.1
+  saturation: 0.1
+  rotation_degrees: 10.0
+  translate: 0.05
 data:
   root: ../../data/VGGFace2
   train_dir: train_data
   val_dir: val_data
   test_dir: test_data
   manifest: ../../data/manifests/vggface2_classification.csv
+  cache: auto
+  cache_max_fraction: 0.8
+  cache_reserve_gib: 2.0
 training:
   epochs: 30
   batch_size: 64

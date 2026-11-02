@@ -27,6 +27,10 @@ class PreprocessConfig(Settings):
     std: tuple[float, float, float]
     horizontal_flip: float = Field(ge=0, le=1)
     brightness: float = Field(ge=0, le=1)
+    contrast: float = Field(default=0, ge=0, le=1)
+    saturation: float = Field(default=0, ge=0, le=1)
+    rotation_degrees: float = Field(default=0, ge=0, le=45)
+    translate: float = Field(default=0, ge=0, le=0.25)
 
     @model_validator(mode="after")
     def positive_std(self) -> Self:
@@ -41,6 +45,9 @@ class DataConfig(Settings):
     val_dir: str
     test_dir: str
     manifest: Path | None
+    cache: Literal["auto", "none"] = "auto"
+    cache_max_fraction: float = Field(default=0.8, gt=0, lt=1)
+    cache_reserve_gib: float = Field(default=2.0, ge=0)
 
 
 class RecognitionConfig(Settings):
@@ -91,6 +98,7 @@ def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path 
         "warmup-epochs": ("training.warmup_epochs", int),
         "accumulation-steps": ("training.accumulation_steps", int),
         "eta-min": ("training.eta_min", float),
+        "cache": ("data.cache", str),
     }
     for flag, (_, value_type) in aliases.items():
         parser.add_argument(f"--{flag}", type=value_type, default=argparse.SUPPRESS)

@@ -9,6 +9,8 @@ import pytest
 import torch
 import yaml
 
+from src.recognition.classification.augmentation import FaceBatchTransform
+from src.recognition.classification.cache import cache_budget, cache_loaders
 from src.recognition.classification.config import RecognitionConfig, load_config
 from src.recognition.classification.data import FaceTransform, make_loaders
 from src.recognition.classification.evaluate import evaluate
@@ -21,6 +23,7 @@ from src.recognition.verification import (
     score_metrics,
 )
 from src.recognition.verification.run import EvaluationConfig, VerificationRunner
+from src.training import Trainer
 from src.training.config import read_yaml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -46,7 +49,15 @@ def tiny_config(tmp_path, variant="a", device="cpu"):
     raw = read_yaml(REPO / f"configs/recognition/model_{variant}.yaml")
     raw["data"].update(root=str(tmp_path / "data"), manifest=None)
     raw["output_dir"] = str(tmp_path / "runs")
-    raw["preprocess"].update(size=32, horizontal_flip=0, brightness=0)
+    raw["preprocess"].update(
+        size=32,
+        horizontal_flip=0,
+        brightness=0,
+        contrast=0,
+        saturation=0,
+        rotation_degrees=0,
+        translate=0,
+    )
     raw["training"].update(
         epochs=1,
         batch_size=2,
@@ -134,6 +145,171 @@ def test_bgr_preprocessing_and_arcface_target_margin(tmp_path):
     logits.sum().backward()
     assert torch.isfinite(features.grad).all()
     assert head.weight.grad is not None
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_device_augmentation_is_per_image_and_eval_matches_inference(tmp_path, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA GPU unavailable")
+    cfg = tiny_config(tmp_path).preprocess.model_copy(update={"horizontal_flip": 0.5})
+    transform = FaceBatchTransform(cfg).to(device)
+    image = torch.zeros(1, 3, 32, 32, dtype=torch.uint8, device=device)
+    image[:, 0, :, :16] = 255
+    batch = image.expand(64, -1, -1, -1).clone()
+    original = batch.clone()
+    torch.manual_seed(9)
+    output = transform(batch)
+    assert output.device.type == device and output.dtype == torch.float32
+    assert set(output[:, 0, 0, 0].tolist()) == {-1, 1}
+    assert not torch.equal(output, transform(batch))
+    assert torch.equal(batch, original)
+    transform.eval()
+    red = np.zeros((32, 32, 3), dtype=np.uint8)
+    red[:, :, 2] = 255
+    rgb = torch.from_numpy(red[:, :, ::-1].copy()).permute(2, 0, 1)
+    expected = FaceTransform(cfg)(red)
+    assert torch.equal(transform(rgb[None].to(device))[0].cpu(), expected)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_color_and_geometry_augmentation_is_fresh_and_bounded(tmp_path, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA GPU unavailable")
+    cfg = tiny_config(tmp_path).preprocess.model_copy(
+        update={
+            "brightness": 0.2,
+            "contrast": 0.2,
+            "saturation": 0.2,
+            "rotation_degrees": 10,
+            "translate": 0.05,
+        }
+    )
+    transform = FaceBatchTransform(cfg).to(device)
+    images = torch.full((8, 3, 32, 32), 120, dtype=torch.uint8, device=device)
+    images[:, 0, :, :16] = 240
+    output = transform(images)
+    assert torch.isfinite(output).all() and output.min() >= -1 and output.max() <= 1
+    assert not torch.equal(output[0], output[1])
+    assert not torch.equal(output, transform(images))
+    transform.eval()
+    assert torch.equal(transform(images), transform(images))
+
+
+def test_cache_budget_keeps_training_reserve_and_fraction():
+    assert cache_budget(10 * 2**30, 0.8, 3) == 7 * 2**30
+    assert cache_budget(10 * 2**30, 0.5, 2) == 5 * 2**30
+    assert cache_budget(2**30, 0.8, 2) == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+def test_cuda_cache_contains_unaugmented_crops_and_streams_when_over_budget(
+    tmp_path, monkeypatch
+):
+    cfg = tiny_config(tmp_path, device="cuda")
+    train_loader, val_loader, _ = make_loaders(cfg)
+    expected = next(iter(val_loader))[0]
+    (cached_train, cached_val), report = cache_loaders(
+        (train_loader, val_loader), cfg, torch.device("cuda")
+    )
+    assert report["mode"] == "cuda" and report["cached_images"] == 8
+    assert report["required_bytes"] == 8 * 3 * 32**2
+    assert cached_train.num_workers == 0 and not cached_val.pin_memory
+    assert cached_val.dataset.cached_images.dtype == torch.uint8
+
+    def no_decode(*args):
+        raise AssertionError("cached iteration must not decode source images")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cv2, "imread", no_decode)
+        images, _ = next(iter(cached_val))
+        assert images.is_cuda and torch.equal(images.cpu(), expected)
+    cfg = cfg.model_copy(
+        update={"data": cfg.data.model_copy(update={"cache_reserve_gib": 1_000_000})}
+    )
+    a, b, _ = make_loaders(cfg)
+    (streaming, _), report = cache_loaders((a, b), cfg, torch.device("cuda"))
+    assert report["reason"] == "insufficient_budget" and report["mode"] == "batch"
+    assert next(iter(streaming))[0].device.type == "cpu"
+    transform = FaceBatchTransform(cfg.preprocess).cuda()
+    assert transform(next(iter(streaming))[0].cuda()).is_cuda
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+def test_cache_allocation_oom_releases_partial_cache(tmp_path, monkeypatch):
+    import src.recognition.classification.cache as cache_module
+
+    cfg = tiny_config(tmp_path, device="cuda")
+    a, b, _ = make_loaders(cfg)
+
+    def allocation_oom(*args):
+        partial = torch.zeros(1024, device="cuda")
+        assert partial.is_cuda
+        raise torch.cuda.OutOfMemoryError("injected cache allocation failure")
+
+    monkeypatch.setattr(cache_module, "_allocate_and_fill", allocation_oom)
+    with pytest.warns(UserWarning, match="cache allocation failed"):
+        loaders, report = cache_loaders((a, b), cfg, torch.device("cuda"))
+    assert report["reason"] == "cache_cuda_oom"
+    assert all(loader.dataset.cached_images is None for loader in loaders)
+    assert next(iter(loaders[0]))[0].device.type == "cpu"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+@pytest.mark.parametrize("completed_epochs", [0, 1])
+def test_training_oom_retries_without_cache_and_preserves_weights(
+    tmp_path, monkeypatch, completed_epochs
+):
+    cfg = tiny_config(tmp_path, device="cuda")
+    cfg = cfg.model_copy(
+        update={
+            "preprocess": cfg.preprocess.model_copy(
+                update={
+                    "horizontal_flip": 0.5,
+                    "brightness": 0.1,
+                    "rotation_degrees": 5,
+                    "translate": 0.05,
+                }
+            )
+        }
+    )
+    cfg = cfg.model_copy(
+        update={
+            "training": cfg.training.model_copy(
+                update={
+                    "epochs": 2,
+                    "scheduler": "none",
+                    "patience": None,
+                    "deterministic": True,
+                }
+            )
+        }
+    )
+    streaming = cfg.model_copy(
+        update={"data": cfg.data.model_copy(update={"cache": "none"})}
+    )
+    expected = train(streaming)
+    original = Trainer._epoch
+    injected = False
+
+    def interrupted_epoch(self, loader, *, train):
+        nonlocal injected
+        result = original(self, loader, train=train)
+        if train and len(self.history) == completed_epochs and not injected:
+            injected = True
+            raise torch.cuda.OutOfMemoryError("injected training failure")
+        return result
+
+    monkeypatch.setattr(Trainer, "_epoch", interrupted_epoch)
+    with pytest.warns(UserWarning, match="Releasing the cache"):
+        result = train(cfg)
+    assert injected
+    pipeline = json.loads((result.run_dir / "data_pipeline.json").read_text())
+    assert pipeline["mode"] == "batch" and pipeline["reason"] == "training_cuda_oom"
+    actual = torch.load(result.last_checkpoint, weights_only=True)
+    baseline = torch.load(expected.last_checkpoint, weights_only=True)
+    assert len(actual["history"]) == 2
+    for key in baseline["task"]:
+        assert torch.equal(actual["task"][key], baseline["task"][key]), key
 
 
 @pytest.mark.parametrize("variant", ["a", "c"])
