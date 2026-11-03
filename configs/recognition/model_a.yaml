@@ -21,12 +21,12 @@ data:
   train_dir: train_data
   val_dir: val_data
   test_dir: test_data
-  manifest: ../../data/manifests/vggface2_classification.csv
+  manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/vggface2_classification.csv
   cache: auto
   cache_max_fraction: 0.8
   cache_reserve_gib: 2.0
 training:
-  epochs: 30
+  epochs: 100
   batch_size: 64
   lr: 0.001
   weight_decay: 0.0001
@@ -57,13 +57,22 @@ training:
   seed: 42
   device: auto
   amp: true
+  amp_dtype: bf16
   amp_init_scale: 65536.0
   deterministic: false
   num_workers: 0
-  monitor: val_auc
+  monitor: val_tar
   mode: max
   patience: 5
   min_delta: 0.0
+  checkpoint_tiebreakers:
+    - metric: val_auc
+      mode: max
+      min_delta: 0.0
+    - metric: val_loss
+      mode: min
+      min_delta: 0.0001
+  early_stopping_monitor: null
   early_stopping_start_epoch: null
   clip_grad_norm: null
   progress: true
@@ -71,7 +80,10 @@ output_dir: ../../runs/recognition
 evaluator: null
 verification:
   root: ../../data/VGGFace2
-  pairs: ../../data/manifests/verification_pairs_val.csv
+  pairs: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/verification_pairs_val.csv
+  bbox_manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/bbox_manifest.csv
   pairs_format: csv
   target_fpr: 0.01
   selection_metric: cosine
+  batch_size: 64
+  cache: auto

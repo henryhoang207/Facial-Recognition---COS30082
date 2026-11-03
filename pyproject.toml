@@ -1,12 +1,12 @@
 [tool.black]
 target-version = ["py312"]
 line-length = 88
-include = '(examples/|src/training/|src/datasets/|src/recognition/classification/|src/recognition/verification/|tests/test_datasets|tests/test_training|tests/test_recognition|scripts/check_training.py|scripts/check_docs.py)'
+include = '(examples/|src/training/|src/datasets/|src/recognition/classification/|src/recognition/verification/|src/recognition/preprocessing/|tests/test_datasets|tests/test_training|tests/test_recognition|tests/test_face_preparation|scripts/check_training.py|scripts/check_docs.py)'
 
 [tool.ruff]
 target-version = "py312"
 line-length = 88
-include = ["examples/**/*.py", "src/training/**/*.py", "src/datasets/**/*.py", "src/recognition/classification/**/*.py", "src/recognition/verification/**/*.py", "tests/test_datasets*.py", "tests/test_training*.py", "tests/test_recognition*.py", "scripts/check_training.py", "scripts/check_docs.py"]
+include = ["examples/**/*.py", "src/training/**/*.py", "src/datasets/**/*.py", "src/recognition/classification/**/*.py", "src/recognition/verification/**/*.py", "src/recognition/preprocessing/**/*.py", "tests/test_datasets*.py", "tests/test_training*.py", "tests/test_recognition*.py", "tests/test_face_preparation*.py", "scripts/check_training.py", "scripts/check_docs.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

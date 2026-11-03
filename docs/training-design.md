@@ -5,7 +5,7 @@ The original liveness implementation owns its loop, ACER metrics, and checkpoint
 ## Usage defines the interface
 
 ```python
-task = RecognitionTask(model).to(device)
+task = RecognitionTask(model, preprocess_config).to(device)
 optimizer = make_optimizer(task, config)
 trainer = Trainer(task, optimizer, config, new_run_dir(root, "recognition_a"))
 result = trainer.fit(train_loader, val_loader)

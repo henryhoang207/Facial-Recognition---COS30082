@@ -2,6 +2,7 @@
 
 import csv
 import hashlib
+import os
 import shlex
 from pathlib import Path
 from typing import Literal
@@ -23,6 +24,9 @@ class VerificationConfig(Settings):
     pairs_format: Literal["whitespace", "csv"]
     target_fpr: float = Field(ge=0, lt=1)
     selection_metric: Literal["cosine", "euclidean"]
+    batch_size: int = Field(default=64, gt=0)
+    cache: Literal["auto", "none"] = "auto"
+    bbox_manifest: Path | None = None
 
 
 def score_metrics(
@@ -83,6 +87,44 @@ class PairEvaluator:
         with config.pairs.open("rb") as stream:
             self.pairs_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
         self.pairs = self._read_pairs()
+        self.paths = tuple(
+            sorted(
+                {path for first, second, _ in self.pairs for path in (first, second)}
+            )
+        )
+        self.boxes = {}
+        self.bbox_manifest_sha256 = None
+        if config.bbox_manifest is not None:
+            with config.bbox_manifest.open("rb") as stream:
+                self.bbox_manifest_sha256 = hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
+            self.boxes = self._read_boxes()
+
+    def _read_boxes(self):
+        wanted = set(self.paths)
+        boxes = {}
+        with self.config.bbox_manifest.open(encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            keys = ("x1", "y1", "x2", "y2")
+            if not {"path", *keys}.issubset(reader.fieldnames or []):
+                raise ValueError("bbox manifest requires path,x1,y1,x2,y2")
+            for row in reader:
+                path = Path(os.path.abspath(self.config.root / row["path"]))
+                if path not in wanted:
+                    continue
+                if path in boxes:
+                    raise ValueError(f"duplicate verification bbox: {path}")
+                box = tuple(int(row[key]) for key in keys)
+                if not (0 <= box[0] < box[2] and 0 <= box[1] < box[3]):
+                    raise ValueError(f"invalid verification bbox: {path}")
+                if row.get("width") and row.get("height"):
+                    if box[2] > int(row["width"]) or box[3] > int(row["height"]):
+                        raise ValueError(f"verification bbox outside image: {path}")
+                boxes[path] = box
+        if wanted - boxes.keys():
+            raise ValueError("bbox manifest must cover every verification image")
+        return boxes
 
     def _read_pairs(self) -> list[tuple[Path, Path, int]]:
         with self.config.pairs.open(encoding="utf-8-sig", newline="") as stream:
@@ -117,21 +159,30 @@ class PairEvaluator:
             )
         return pairs
 
+    def read_face(self, path: Path) -> np.ndarray:
+        frame = cv2.imread(str(path))
+        if frame is None:
+            raise ValueError(f"cannot decode verification image: {path}")
+        height, width = frame.shape[:2]
+        box = self.boxes.get(path, (0, 0, width, height))
+        if box[2] > width or box[3] > height:
+            raise ValueError(f"verification bbox outside decoded image: {path}")
+        return crop_face(frame, box, self.size, self.crop_scale)
+
     def score(self, embedder: Embedder) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-        paths = sorted(
-            {path for first, second, _ in self.pairs for path in (first, second)}
+        vectors = (
+            embedder.embed(self.read_face(path))
+            for path in tqdm(
+                self.paths, desc="verification embeddings", disable=not self.progress
+            )
         )
+        return self._score_vectors(vectors)
+
+    def _score_vectors(self, vectors) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         embeddings = {}
         dimension = None
-        for path in tqdm(
-            paths, desc="verification embeddings", disable=not self.progress
-        ):
-            frame = cv2.imread(str(path))
-            if frame is None:
-                raise ValueError(f"cannot decode verification image: {path}")
-            height, width = frame.shape[:2]
-            face = crop_face(frame, (0, 0, width, height), self.size, self.crop_scale)
-            vector = np.asarray(embedder.embed(face), dtype=np.float64)
+        for path, value in zip(self.paths, vectors, strict=True):
+            vector = np.asarray(value, dtype=np.float64)
             if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
                 raise ValueError("embed must return a finite, nonempty 1-D vector")
             norm = np.linalg.norm(vector)
@@ -155,6 +206,18 @@ class PairEvaluator:
 
     def evaluate(self, embedder: Embedder, *, thresholds: dict | None = None):
         labels, scores = self.score(embedder)
+        return self._summarize(labels, scores, thresholds)
+
+    def evaluate_embeddings(
+        self, vectors: np.ndarray, *, thresholds: dict | None = None
+    ):
+        """Score fresh embeddings in self.paths order using the shared protocol."""
+        if vectors.ndim != 2 or vectors.shape[0] != len(self.paths):
+            raise ValueError("provide one embedding row per verification image")
+        labels, scores = self._score_vectors(vectors)
+        return self._summarize(labels, scores, thresholds)
+
+    def _summarize(self, labels, scores, thresholds):
         results, curves = {}, {}
         for metric, values in scores.items():
             results[metric], curves[metric] = score_metrics(

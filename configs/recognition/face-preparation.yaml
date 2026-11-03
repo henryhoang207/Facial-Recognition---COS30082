@@ -1,0 +1,22 @@
+root: ../../data/VGGFace2
+classification: ../../data/manifests/vggface2_classification.csv
+verification: ../../data/manifests/vggface2_verification.csv
+output_dir: ../../data/manifests/recognition_faces
+overrides: null
+seed: 42
+workers: 8
+chunk_size: 512
+positive_pairs: 3000
+negative_pairs: 3000
+progress: true
+detector:
+  model: ../../data/models/face_detection_yunet_2023mar.onnx
+  url: https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+  sha256: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+  input_size: 320
+  score_threshold: 0.9
+  nms_threshold: 0.3
+  top_k: 5000
+  min_face_pixels: 20
+  min_face_area_fraction: 0.05
+  max_center_distance: 0.4

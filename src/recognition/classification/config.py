@@ -99,6 +99,7 @@ def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path 
         "accumulation-steps": ("training.accumulation_steps", int),
         "eta-min": ("training.eta_min", float),
         "cache": ("data.cache", str),
+        "amp-dtype": ("training.amp_dtype", str),
     }
     for flag, (_, value_type) in aliases.items():
         parser.add_argument(f"--{flag}", type=value_type, default=argparse.SUPPRESS)
@@ -142,6 +143,11 @@ def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path 
                     update={
                         "root": (base / config.verification.root).resolve(),
                         "pairs": (base / config.verification.pairs).resolve(),
+                        "bbox_manifest": (
+                            (base / config.verification.bbox_manifest).resolve()
+                            if config.verification.bbox_manifest is not None
+                            else None
+                        ),
                     }
                 )
                 if config.verification is not None

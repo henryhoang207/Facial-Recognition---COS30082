@@ -82,10 +82,11 @@ data:
   train_dir: train_data
   val_dir: val_data
   test_dir: test_data
-  manifest: ../../data/manifests/vggface2_classification.csv
+  manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/vggface2_classification.csv
 verification:
   root: ../../data/VGGFace2
-  pairs: ../../data/manifests/verification_pairs_val.csv
+  pairs: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/verification_pairs_val.csv
+  bbox_manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/bbox_manifest.csv
   pairs_format: csv
   target_fpr: 0.01
   selection_metric: cosine
@@ -108,8 +109,8 @@ The shared settings are validated before training. Unknown YAML keys, duplicate 
 | Learning-rate schedule | `scheduler`, `eta_min`, `cosine_t_max` |
 | Warmup | `warmup_epochs`, `warmup_start_factor` |
 | Gradient updates | `accumulation_steps`, `clip_grad_norm` |
-| Mixed precision | `amp`, `amp_init_scale` |
-| Checkpoint selection and stopping | `monitor`, `mode`, `patience`, `min_delta`, `early_stopping_start_epoch` |
+| Mixed precision | `amp`, `amp_dtype`, `amp_init_scale` |
+| Checkpoint selection and stopping | `monitor`, `mode`, `checkpoint_tiebreakers`, `early_stopping_monitor`, `patience`, `min_delta`, `early_stopping_start_epoch` |
 | Reproducibility and device | `seed`, `deterministic`, `device` |
 | Output display | `progress` |
 | Separate optimizer groups | `parameter_groups` |
@@ -121,6 +122,56 @@ Use `scheduler: cosine` or `scheduler: none`. Linear warmup can precede either c
 Use `mode: max` for `val_auc` or `val_accuracy`, and `mode: min` for `val_loss`. `patience: null` disables early stopping. `early_stopping_start_epoch: null` waits until warmup completes before counting epochs without improvement.
 
 Best-checkpoint selection remains active during warmup.
+
+## Select checkpoints with multiple metrics
+
+`monitor`, `mode`, and `min_delta` define the first comparison. `checkpoint_tiebreakers` adds ordered comparisons; an empty list preserves single-metric selection. Recognition A/C use:
+
+```yaml
+training:
+  monitor: val_tar
+  mode: max
+  min_delta: 0.0
+  checkpoint_tiebreakers:
+    - metric: val_auc
+      mode: max
+      min_delta: 0.0
+    - metric: val_loss
+      mode: min
+      min_delta: 0.0001
+  early_stopping_monitor: null
+  patience: 5
+```
+
+The trainer compares the current epoch with the selected best epoch, in priority order. A gain greater than that metric's `min_delta` selects the candidate immediately; a regression greater than `min_delta` rejects it immediately. A difference within the tolerance moves to the next metric. Ties on every metric retain the earlier checkpoint. With zero tolerance, ties must be exact. There is no weighted sum or automatic normalization between metrics.
+
+For example, TAR improving from 0.80 to 0.81 selects a new checkpoint even if AUC is unchanged. With TAR and AUC unchanged, a loss decrease greater than 0.0001 selects a new checkpoint. A lower loss cannot compensate for a lower TAR under the supplied zero-tolerance TAR policy. `best` remains the selected epoch's primary metric value; `selection_metrics` in `best.pt` and `summary.json` records every selection metric. `last.pt` still stores the latest complete epoch and the selected best weights.
+
+Tolerances are pairwise against the selected checkpoint, not permanent limits relative to a historical peak. Giving an earlier metric a positive tolerance permits a secondary metric to select an epoch with a small regression in that earlier metric. Repeated replacements can accumulate that regression. Keep zero tolerance for metrics that must never regress. All requested metric names must be unique and available each epoch; missing metrics raise an error before checkpoint advancement.
+
+With `early_stopping_monitor: null`, any improvement in the ordered checkpoint policy resets patience. To stop on a separate metric, configure a mapping such as `{metric: val_loss, mode: min, min_delta: 0.001}`. Its best value and patience counter are maintained independently of checkpoint selection and restored on resume. Stopping on AUC alone can still end a run while secondary checkpoint metrics improve.
+
+Change selection criteria before starting a new run. Resume rejects changed selection or stopping policies, because a prior `last.pt` contains only the previously selected best weights and cannot recover every historical candidate. Older configurations without the new fields keep single-metric selection.
+
+Use CLI overrides for experiments:
+
+```bash
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --set 'training.checkpoint_tiebreakers=[{metric: val_auc, mode: max, min_delta: 0.0}, {metric: val_loss, mode: min, min_delta: 0.001}]'
+```
+
+## Configure mixed precision
+
+CUDA mixed precision uses `amp: true` with `amp_dtype: bf16` or `fp16`. Recognition A and C default to BF16. The shared schema defaults to FP16 when older configurations omit `amp_dtype`. CPU runs and `amp: false` use FP32. BF16 requires native support on the selected CUDA device; an unsupported device raises an error instead of changing precision.
+
+Autocast selects lower precision for eligible operations while model weights and optimizer state remain FP32. BF16 does not enable gradient scaling. FP16 uses GradScaler, whose starting scale is `amp_init_scale`. `environment.json` records the effective `precision` and whether `gradient_scaling` is enabled. See [PyTorch AMP](https://docs.pytorch.org/docs/stable/amp.html) for operation-specific behavior.
+
+For recognition, select BF16 explicitly with:
+
+```bash
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --device cuda --amp-dtype bf16
+```
+
+Other shared-trainer entry points can use `--set training.amp_dtype=bf16 --set training.amp=true` when those keys exist in their YAML. Keep the same precision settings when resuming. A change of `amp` or `amp_dtype` requires a new training run under the current resume policy.
 
 Accumulation weights gradients by the actual number of samples represented by each microbatch. It also flushes an incomplete final window. Batch size 64 with accumulation 4 represents up to 256 images per optimizer update. BatchNorm statistics still come from individual microbatches.
 
@@ -202,10 +253,10 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 Recognition override precedence is YAML, then `--set`, then named flags, then `--group-lr`. Only explicitly supplied arguments override the YAML. They do not modify the file.
 
-The supplied recognition configurations select checkpoints using verification `val_auc`. To run classification without verification, choose that policy explicitly:
+The supplied recognition configurations select checkpoints using verification `val_tar`, then `val_auc`, then `val_loss`. To run classification without verification, choose that policy explicitly:
 
 ```bash
-python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --set verification=null --monitor val_loss --mode min
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --set verification=null --set "training.checkpoint_tiebreakers=[]" --monitor val_loss --mode min
 ```
 
 Random initialization is the baseline. Use ImageNet initialization only under the group's agreed course requirements. See [recognition training](recognition-training.md) for model and evaluation details.

@@ -1,5 +1,6 @@
 """Behavioral checks for the reusable engine, independent of recognition."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -38,12 +39,15 @@ def config(**updates) -> TrainingConfig:
         scheduler="none",
         device="cpu",
         amp=False,
+        amp_dtype="fp16",
         deterministic=True,
         monitor="val_loss",
         mode="min",
         patience=None,
         progress=False,
         parameter_groups=[],
+        checkpoint_tiebreakers=[],
+        early_stopping_monitor=None,
     )
     raw.update(updates)
     return TrainingConfig.model_validate(raw)
@@ -147,11 +151,20 @@ def test_triplet_task_accepts_dictionary_batches_and_updates_trainable_loss(tmp_
     assert result.history[-1]["val_loss"] < result.history[0]["train_loss"]
 
 
-def test_resume_restores_dropout_optimizer_and_shuffled_loader(tmp_path):
-    full, full_state = run_regression(tmp_path / "full", config())
-    initial, _ = run_regression(tmp_path / "initial", config(epochs=2))
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_resume_restores_dropout_optimizer_and_shuffled_loader(tmp_path, device):
+    if device == "cuda" and (
+        not torch.cuda.is_available()
+        or not torch.cuda.is_bf16_supported(including_emulation=False)
+    ):
+        pytest.skip("Native BF16 GPU unavailable")
+    cfg = config(device=device, amp=device == "cuda", amp_dtype="bf16")
+    full, full_state = run_regression(tmp_path / "full", cfg)
+    initial, _ = run_regression(
+        tmp_path / "initial", cfg.model_copy(update={"epochs": 2})
+    )
     resumed, resumed_state = run_regression(
-        tmp_path / "resumed", config(), resume=initial.last_checkpoint
+        tmp_path / "resumed", cfg, resume=initial.last_checkpoint
     )
     assert [row["epoch"] for row in resumed.history] == [1, 2, 3, 4]
     assert resumed.history == full.history
@@ -207,17 +220,27 @@ def test_missing_monitor_and_nonfinite_loss_fail_without_checkpoint(tmp_path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
-def test_cuda_amp_training_updates_weights(tmp_path):
+@pytest.mark.parametrize("amp_dtype", ["fp16", "bf16"])
+def test_cuda_amp_training_updates_weights(tmp_path, amp_dtype):
+    if amp_dtype == "bf16" and not torch.cuda.is_bf16_supported(
+        including_emulation=False
+    ):
+        pytest.skip("Native BF16 GPU unavailable")
     cfg = config(
         epochs=1,
         device="cuda",
         amp=True,
+        amp_dtype=amp_dtype,
         deterministic=False,
         accumulation_steps=2,
         amp_init_scale=1.0,
     )
     seed_everything(18)
     task = RegressionTask().cuda()
+    observed_dtypes = []
+    task.network[-1].register_forward_hook(
+        lambda module, inputs, output: observed_dtypes.append(output.dtype)
+    )
     before = task.network[0].weight.detach().clone()
     result = Trainer(task, make_optimizer(task, cfg), cfg, tmp_path / "cuda").fit(
         *loaders()
@@ -226,9 +249,62 @@ def test_cuda_amp_training_updates_weights(tmp_path):
     checkpoint = torch.load(
         result.last_checkpoint, weights_only=True, map_location="cpu"
     )
-    assert checkpoint["scaler"]["scale"] > 0
+    if amp_dtype == "fp16":
+        assert checkpoint["scaler"]["scale"] > 0
+    else:
+        assert checkpoint["scaler"] == {}
+    assert set(observed_dtypes) == {
+        torch.float16 if amp_dtype == "fp16" else torch.bfloat16
+    }
+    assert all(parameter.dtype == torch.float32 for parameter in task.parameters())
+    environment = json.loads((result.run_dir / "environment.json").read_text())
+    assert environment["precision"] == f"{amp_dtype}-mixed"
+    assert environment["gradient_scaling"] == (amp_dtype == "fp16")
     assert result.history[0]["train_loss"] > 0
     assert result.history[0]["train_optimizer_steps"] == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+def test_bf16_rejects_unsupported_gpu_instead_of_changing_precision(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        torch.cuda, "is_bf16_supported", lambda including_emulation=False: False
+    )
+    cfg = config(device="cuda", amp=True, amp_dtype="bf16")
+    task = RegressionTask().cuda()
+    with pytest.raises(ValueError, match="does not support native BF16"):
+        Trainer(task, make_optimizer(task, cfg), cfg, tmp_path / "unsupported")
+
+
+def test_bf16_selection_with_cpu_or_disabled_amp_uses_fp32(tmp_path):
+    cfg = config(epochs=1, amp=True, amp_dtype="bf16")
+    result, payload = run_regression(tmp_path / "cpu", cfg)
+    assert payload["scaler"] == {}
+    environment = json.loads((result.run_dir / "environment.json").read_text())
+    assert environment["precision"] == "fp32"
+    assert environment["gradient_scaling"] is False
+
+
+def test_resume_rejects_a_precision_change(tmp_path):
+    initial, _ = run_regression(tmp_path / "initial-fp16", config(epochs=1))
+    with pytest.raises(ValueError, match="amp_dtype"):
+        run_regression(
+            tmp_path / "changed-bf16",
+            config(amp_dtype="bf16"),
+            resume=initial.last_checkpoint,
+        )
+
+
+def test_older_checkpoint_without_amp_dtype_keeps_fp16_default(tmp_path):
+    initial, payload = run_regression(tmp_path / "older-config", config(epochs=1))
+    del payload["training_config"]["amp_dtype"]
+    torch.save(payload, initial.last_checkpoint)
+    result, saved = run_regression(
+        tmp_path / "continued-config", config(epochs=2), resume=initial.last_checkpoint
+    )
+    assert len(result.history) == 2
+    assert saved["training_config"]["amp_dtype"] == "fp16"
 
 
 @pytest.mark.parametrize("amsgrad,expected", [(False, -0.0133333333), (True, -0.04)])
@@ -557,3 +633,130 @@ def test_scheduler_does_not_advance_when_amp_skips_all_updates(tmp_path):
         loader, loader
     )
     assert scheduler.last_epoch == 0
+
+
+def selection_config(**updates):
+    return config(
+        epochs=12,
+        patience=2,
+        monitor="val_tar",
+        mode="max",
+        checkpoint_tiebreakers=[
+            {"metric": "val_auc", "mode": "max"},
+            {"metric": "val_loss", "mode": "min", "min_delta": 0.0001},
+        ],
+        **updates,
+    )
+
+
+def selection_run(path, cfg, rows, *, resume=None):
+    task = FixedLossTask()
+    values = iter(rows)
+    loader = DataLoader(
+        TensorDataset(torch.ones(2)),
+        batch_size=2,
+        generator=torch.Generator().manual_seed(42),
+    )
+
+    def epoch(loader, *, train):
+        if train:
+            with torch.no_grad():
+                task.parameter.add_(1)
+            return {"loss": 1.0, "optimizer_steps": 1}
+        return next(values)
+
+    trainer = Trainer(task, make_optimizer(task, cfg), cfg, path)
+    trainer._epoch = epoch
+    return trainer.fit(loader, loader, resume=resume)
+
+
+def test_secondary_metrics_save_best_after_auc_plateaus_and_reset_patience(tmp_path):
+    rows = [
+        {"tar": 0.8, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.81, "auc": 0.99, "loss": 1.2},
+        {"tar": 0.81, "auc": 0.99, "loss": 0.8},
+        {"tar": 0.80, "auc": 1.0, "loss": 0.1},
+        {"tar": 0.81, "auc": 0.99, "loss": 0.8},
+    ]
+    result = selection_run(tmp_path / "multi", selection_config(), rows)
+    assert result.best_epoch == 3 and len(result.history) == 5
+    best = torch.load(result.best_checkpoint, weights_only=True)
+    last = torch.load(result.last_checkpoint, weights_only=True)
+    assert best["selection_metrics"] == {
+        "val_tar": 0.81,
+        "val_auc": 0.99,
+        "val_loss": 0.8,
+    }
+    assert last["bad_epochs"] == 2
+    assert best["task"]["parameter"].item() == 3
+    assert last["task"]["parameter"].item() == 5
+
+
+def test_auc_tie_breaker_precedes_loss_and_unchanged_metrics_keep_earlier_epoch(
+    tmp_path,
+):
+    rows = [
+        {"tar": 0.9, "auc": 0.98, "loss": 0.5},
+        {"tar": 0.9, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.9, "auc": 0.99, "loss": 0.99995},
+        {"tar": 0.9, "auc": 0.99, "loss": 1.0},
+    ]
+    result = selection_run(tmp_path / "priority", selection_config(), rows)
+    assert result.best_epoch == 2 and len(result.history) == 4
+
+
+def test_missing_secondary_metric_fails_before_checkpoint(tmp_path):
+    with pytest.raises(ValueError, match="val_auc"):
+        selection_run(
+            tmp_path / "missing", selection_config(), [{"tar": 0.9, "loss": 1.0}]
+        )
+    assert not (tmp_path / "missing/best.pt").exists()
+
+
+def test_separate_stopping_metric_does_not_reset_for_checkpoint_tiebreakers(tmp_path):
+    rows = [
+        {"tar": 0.8, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.81, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.82, "auc": 0.99, "loss": 1.0},
+    ]
+    cfg = selection_config(early_stopping_monitor={"metric": "val_auc", "mode": "max"})
+    result = selection_run(tmp_path / "separate", cfg, rows)
+    assert result.best_epoch == 3 and len(result.history) == 3
+    saved = torch.load(result.last_checkpoint, weights_only=True)
+    assert saved["stopping_best"] == {"val_auc": 0.99} and saved["bad_epochs"] == 2
+
+
+def test_multi_metric_resume_keeps_selection_and_stopping_state(tmp_path):
+    rows = [
+        {"tar": 0.8, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.81, "auc": 0.99, "loss": 1.0},
+        {"tar": 0.81, "auc": 0.99, "loss": 0.8},
+        {"tar": 0.80, "auc": 1.0, "loss": 0.1},
+        {"tar": 0.81, "auc": 0.99, "loss": 0.8},
+    ]
+    cfg = selection_config()
+    full = selection_run(tmp_path / "full-metrics", cfg, rows)
+    first = selection_run(
+        tmp_path / "first-metrics", cfg.model_copy(update={"epochs": 2}), rows[:2]
+    )
+    resumed = selection_run(
+        tmp_path / "resumed-metrics", cfg, rows[2:], resume=first.last_checkpoint
+    )
+    assert resumed.history == full.history
+    assert resumed.best_epoch == full.best_epoch == 3
+    saved = torch.load(resumed.last_checkpoint, weights_only=True)
+    assert saved["bad_epochs"] == 2
+    cfg = selection_config(early_stopping_monitor={"metric": "val_auc", "mode": "max"})
+    first = selection_run(
+        tmp_path / "first-stop", cfg.model_copy(update={"epochs": 2}), rows[:2]
+    )
+    resumed = selection_run(
+        tmp_path / "resumed-stop", cfg, rows[2:], resume=first.last_checkpoint
+    )
+    assert len(resumed.history) == 3
+    assert torch.load(resumed.last_checkpoint, weights_only=True)["bad_epochs"] == 2
+
+
+def test_duplicate_checkpoint_metrics_are_rejected():
+    with pytest.raises(ValueError, match="metric names must be unique"):
+        config(checkpoint_tiebreakers=[{"metric": "val_loss", "mode": "min"}])

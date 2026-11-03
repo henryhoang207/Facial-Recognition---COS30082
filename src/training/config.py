@@ -33,6 +33,12 @@ class ParameterGroupConfig(Settings):
         return self
 
 
+class MetricMonitor(Settings):
+    metric: str = Field(min_length=1)
+    mode: Literal["min", "max"]
+    min_delta: float = Field(default=0, ge=0)
+
+
 class TrainingConfig(Settings):
     epochs: int = Field(gt=0)
     batch_size: int = Field(gt=0)
@@ -55,6 +61,7 @@ class TrainingConfig(Settings):
     seed: int = Field(ge=0, le=2**32 - 1)
     device: str
     amp: bool
+    amp_dtype: Literal["fp16", "bf16"] = "fp16"
     amp_init_scale: float = Field(default=65536.0, gt=0)
     deterministic: bool
     num_workers: int = Field(ge=0)
@@ -62,6 +69,8 @@ class TrainingConfig(Settings):
     mode: Literal["min", "max"]
     patience: int | None = Field(default=None, gt=0)
     min_delta: float = Field(default=0, ge=0)
+    checkpoint_tiebreakers: tuple[MetricMonitor, ...] = ()
+    early_stopping_monitor: MetricMonitor | None = None
     early_stopping_start_epoch: int | None = Field(default=None, gt=0)
     clip_grad_norm: float | None = Field(default=None, gt=0)
     progress: bool = True
@@ -97,6 +106,9 @@ class TrainingConfig(Settings):
         ):
             raise ValueError("early_stopping_start_epoch cannot exceed epochs")
         names = [group.name for group in self.parameter_groups]
+        metrics = [self.monitor, *(item.metric for item in self.checkpoint_tiebreakers)]
+        if len(set(metrics)) != len(metrics):
+            raise ValueError("checkpoint metric names must be unique")
         if len(set(names)) != len(names):
             raise ValueError("parameter group names must be unique")
         learning_rates = [

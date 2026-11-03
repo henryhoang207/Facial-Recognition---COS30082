@@ -1,6 +1,7 @@
 """Reusable training mechanics. Individual packages own datasets and objectives."""
 
 from .config import (
+    MetricMonitor,
     ParameterGroupConfig,
     TrainingConfig,
     make_optimizer,
@@ -13,6 +14,7 @@ from .trainer import FitResult, Trainer, new_run_dir
 
 __all__ = [
     "FitResult",
+    "MetricMonitor",
     "MetricTotal",
     "ParameterGroupConfig",
     "StepResult",

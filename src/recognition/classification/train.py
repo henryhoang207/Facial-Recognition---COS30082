@@ -24,7 +24,7 @@ from .config import RecognitionConfig, load_config
 from .data import make_loaders
 from .models import ClassificationModel
 from .task import RecognitionTask
-from .verification import make_evaluator
+from .verification import TrainingVerificationEvaluator, make_evaluator
 
 
 def build_evaluator(config: RecognitionConfig):
@@ -32,7 +32,13 @@ def build_evaluator(config: RecognitionConfig):
     if config.evaluator is None:
         if config.verification is not None:
             return make_evaluator(config)
-        if config.training.monitor not in {"val_loss", "val_accuracy"}:
+        required = {
+            config.training.monitor,
+            *(item.metric for item in config.training.checkpoint_tiebreakers),
+        }
+        if config.training.early_stopping_monitor is not None:
+            required.add(config.training.early_stopping_monitor.metric)
+        if required - {"val_loss", "val_accuracy"}:
             raise ValueError("custom monitor requires --evaluator module:factory")
         return None
     module, separator, attribute = config.evaluator.partition(":")
@@ -50,7 +56,10 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
     try:
         return _train_once(config, resume, directory, pipeline, cache_allowed=True)
     except torch.cuda.OutOfMemoryError:
-        if pipeline.get("mode") != "cuda":
+        if (
+            pipeline.get("mode") != "cuda"
+            and pipeline.get("verification", {}).get("mode") != "cuda"
+        ):
             raise
         warnings.warn(
             "CUDA ran out of memory with cached crops. Releasing the cache and "
@@ -86,14 +95,6 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
         config.preprocess,
     ).to(resolve_device(config.training.device))
     optimizer = make_optimizer(task, config.training)
-    (train_loader, val_loader), report = cache_loaders(
-        (train_loader, val_loader),
-        config,
-        next(task.parameters()).device,
-        allowed=cache_allowed,
-    )
-    pipeline.update(report)
-    print(json.dumps({"data_pipeline": report}))
     metadata = {
         "task": "recognition_classification",
         "model_config": config.model.model_dump(mode="json"),
@@ -104,6 +105,14 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
         "verification": (
             config.verification.model_dump(mode="json")
             if config.verification is not None
+            else None
+        ),
+        "verification_inputs": (
+            {
+                "pairs_sha256": evaluator.pairs.pairs_sha256,
+                "bbox_manifest_sha256": evaluator.pairs.bbox_manifest_sha256,
+            }
+            if isinstance(evaluator, TrainingVerificationEvaluator)
             else None
         ),
         "splits": {
@@ -130,6 +139,30 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
         metadata=metadata,
         evaluator=evaluator,
     )
+    verification_report = None
+    remaining_budget = None
+    if isinstance(evaluator, TrainingVerificationEvaluator):
+        verification_report = evaluator.prepare(trainer.device, allowed=cache_allowed)
+        pipeline["verification"] = verification_report
+        if "budget_bytes" in verification_report:
+            remaining_budget = (
+                verification_report["budget_bytes"]
+                - verification_report["cached_bytes"]
+            )
+    (train_loader, val_loader), report = cache_loaders(
+        (train_loader, val_loader),
+        config,
+        next(task.parameters()).device,
+        allowed=cache_allowed,
+        budget_bytes=remaining_budget,
+    )
+    if verification_report is not None:
+        report["verification"] = verification_report
+    report["total_cached_bytes"] = report["cached_bytes"] + (
+        verification_report["cached_bytes"] if verification_report else 0
+    )
+    pipeline.update(report)
+    print(json.dumps({"data_pipeline": report}))
     result = trainer.fit(train_loader, val_loader, resume=resume)
     (directory / "data_pipeline.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"

@@ -20,7 +20,8 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .config import TrainingConfig, resolve_device, seed_everything
+from .config import MetricMonitor, TrainingConfig, resolve_device, seed_everything
+from .selection import improves
 from .task import TrainingTask
 
 Evaluator = Callable[[TrainingTask, torch.device], Mapping[str, float]]
@@ -104,6 +105,18 @@ class Trainer:
         evaluator: Evaluator | None = None,
     ) -> None:
         self.device = resolve_device(config.device)
+        self.amp_enabled = config.amp and self.device.type == "cuda"
+        self.amp_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16}[
+            config.amp_dtype
+        ]
+        if self.amp_enabled and self.amp_dtype == torch.bfloat16:
+            # Capability belongs to the selected GPU, which may differ from cuda:0.
+            with torch.cuda.device(self.device):
+                if not torch.cuda.is_bf16_supported(including_emulation=False):
+                    raise ValueError(
+                        f"{self.device} does not support native BF16; "
+                        "select amp_dtype=fp16 or disable amp"
+                    )
         self.task = task.to(self.device)
         owned = {id(parameter) for parameter in self.task.parameters()}
         trainable = {
@@ -129,7 +142,7 @@ class Trainer:
         self.evaluator = evaluator
         self.scaler = torch.amp.GradScaler(
             "cuda",
-            enabled=config.amp and self.device.type == "cuda",
+            enabled=self.amp_enabled and self.amp_dtype == torch.float16,
             init_scale=config.amp_init_scale,
         )
         self.history: list[dict[str, float]] = []
@@ -138,6 +151,13 @@ class Trainer:
         self.best_task: dict | None = None
         self.bad_epochs = 0
         self.start_epoch = 1
+        self.stopping_best: dict[str, float] | None = None
+        self.selection_metrics = (
+            MetricMonitor(
+                metric=config.monitor, mode=config.mode, min_delta=config.min_delta
+            ),
+            *config.checkpoint_tiebreakers,
+        )
 
     def _epoch(self, loader: DataLoader, *, train: bool) -> dict[str, float]:
         self.task.train(train)
@@ -160,7 +180,8 @@ class Trainer:
             for batch in progress:
                 with torch.autocast(
                     self.device.type,
-                    enabled=self.config.amp and self.device.type == "cuda",
+                    dtype=self.amp_dtype,
+                    enabled=self.amp_enabled,
                 ):
                     result = self.task.step(_move(batch, self.device))
                 if result.weight <= 0 or result.loss.ndim != 0:
@@ -264,6 +285,7 @@ class Trainer:
         self.best_epoch = saved["best_epoch"]
         self.best_task = saved["best_task"]
         self.bad_epochs = saved["bad_epochs"]
+        self.stopping_best = saved.get("stopping_best")
         if self.config.patience is not None and self.bad_epochs >= self.config.patience:
             raise ValueError("resume checkpoint already reached early stopping")
         self.start_epoch = saved["epoch"] + 1
@@ -297,6 +319,7 @@ class Trainer:
             "best": self.best,
             "best_epoch": self.best_epoch,
             "bad_epochs": self.bad_epochs,
+            "stopping_best": self.stopping_best,
             "history": self.history,
             "training_config": self.config.model_dump(mode="json"),
             "metadata": self.metadata,
@@ -322,6 +345,10 @@ class Trainer:
             "training_config": self.config.model_dump(mode="json"),
             "metadata": self.metadata,
             "val_metrics": self.history[self.best_epoch - 1],
+            "selection_metrics": {
+                item.metric: self.history[self.best_epoch - 1][item.metric]
+                for item in self.selection_metrics
+            },
         }
 
     def fit(
@@ -352,6 +379,10 @@ class Trainer:
             "torch": str(torch.__version__),
             "cuda_runtime": torch.version.cuda,
             "device": str(self.device),
+            "precision": (
+                f"{self.config.amp_dtype}-mixed" if self.amp_enabled else "fp32"
+            ),
+            "gradient_scaling": self.scaler.is_enabled(),
             "gpu": (
                 torch.cuda.get_device_name(self.device)
                 if self.device.type == "cuda"
@@ -387,26 +418,35 @@ class Trainer:
                         "evaluator metrics must not overwrite existing metrics"
                     )
                 row.update(extra)
-            if self.config.monitor not in row:
-                raise ValueError(f"monitor metric unavailable: {self.config.monitor}")
+            required = {item.metric for item in self.selection_metrics}
+            stop_monitor = self.config.early_stopping_monitor
+            if stop_monitor is not None:
+                required.add(stop_monitor.metric)
+            if missing := required - row.keys():
+                raise ValueError(f"monitor metric unavailable: {sorted(missing)}")
             if not all(math.isfinite(value) for value in row.values()):
                 raise ValueError("all epoch metrics must be finite")
             score = row[self.config.monitor]
-            delta = self.config.min_delta
-            improved = self.best is None or (
-                score < self.best - delta
-                if self.config.mode == "min"
-                else score > self.best + delta
+            improved = improves(
+                row,
+                self.history[self.best_epoch - 1] if self.best_epoch else None,
+                self.selection_metrics,
             )
+            stopping_improved = improved
+            if stop_monitor is not None:
+                stopping_improved = improves(row, self.stopping_best, (stop_monitor,))
+                if stopping_improved:
+                    self.stopping_best = {stop_monitor.metric: row[stop_monitor.metric]}
             if improved:
-                self.best, self.best_epoch, self.bad_epochs = score, epoch, 0
+                self.best, self.best_epoch = score, epoch
                 self.best_task = {
                     name: value.detach().cpu().clone()
                     for name, value in self.task.state_dict().items()
                 }
-            else:
-                if self._early_stopping_active(epoch):
-                    self.bad_epochs += 1
+            if stopping_improved:
+                self.bad_epochs = 0
+            elif self._early_stopping_active(epoch):
+                self.bad_epochs += 1
             if self.scheduler is not None and train["optimizer_steps"] > 0:
                 if isinstance(
                     self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -441,6 +481,7 @@ class Trainer:
                     "best_epoch": self.best_epoch,
                     "monitor": self.config.monitor,
                     "best_value": self.best,
+                    "selection_metrics": self._best_checkpoint()["selection_metrics"],
                     "seconds_this_invocation": time.perf_counter() - started,
                 },
                 indent=2,

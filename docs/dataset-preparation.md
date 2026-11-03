@@ -53,7 +53,9 @@ Images with the same SHA-256 or filename prefix within an identity stay in the s
 
 This is a project protocol generated from the local subset, not an official VGGFace2 test result. Session metadata is unavailable. Filename and hash grouping cannot establish that all near-duplicates or same-session images have been separated.
 
-The A, C, and verification YAML files already point to these manifests. The unseen verification identities and team photos do not enter the classifier. B can use the same classification CSV and mapping with its own P-by-K identity sampler.
+These files are the base manifests. A, C, and verification now select the derived bbox protocol described below. The unseen verification identities and team photos do not enter the classifier. B can use the selected protocol's classification CSV and mapping with its own P-by-K identity sampler.
+
+For detector-generated face bboxes, run the separate [face bbox preparation workflow](recognition-face-preparation.md). It derives filtered, versioned classification and verification manifests from these base exports and leaves the original files intact. Recognition configs can select that generation; model comparisons must use the same selected protocol.
 
 ```bash
 python -m src.recognition.classification.train --config configs/recognition/model_a.yaml

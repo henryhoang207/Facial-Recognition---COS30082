@@ -4,7 +4,7 @@ import gc
 import warnings
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 from tqdm.auto import tqdm
 
 from src.training import seed_worker
@@ -19,7 +19,7 @@ def cache_budget(free_bytes: int, fraction: float, reserve_gib: float) -> int:
     )
 
 
-def _allocate_and_fill(loaders, config, device):
+def _allocate_and_fill(loaders, config, device, names):
     # This scope must unwind before OOM recovery so partial allocations are freed.
     tensors = [
         torch.empty(
@@ -32,7 +32,7 @@ def _allocate_and_fill(loaders, config, device):
         )
         for loader in loaders
     ]
-    for loader, storage, split in zip(loaders, tensors, ("train", "val"), strict=True):
+    for loader, storage, split in zip(loaders, tensors, names, strict=True):
         source = DataLoader(
             loader.dataset,
             batch_size=loader.batch_size,
@@ -55,15 +55,17 @@ def _allocate_and_fill(loaders, config, device):
 
 
 def cache_loaders(
-    loaders: tuple[DataLoader, DataLoader],
+    loaders: tuple[DataLoader, ...],
     config: RecognitionConfig,
     device: torch.device,
     *,
     allowed: bool = True,
-) -> tuple[tuple[DataLoader, DataLoader], dict]:
-    """Cache both active splits if they fit; otherwise keep CPU streaming loaders.
+    names: tuple[str, ...] = ("train", "val"),
+    budget_bytes: int | None = None,
+) -> tuple[tuple[DataLoader, ...], dict]:
+    """Cache all supplied crops if they fit; otherwise keep CPU streaming loaders.
 
-    Call after moving the model to CUDA. Test/verification images are never cached.
+    Call after moving the model to CUDA. Loaders must supply RGB uint8 crops.
     The reserve covers activations, gradients, optimizer state and workspace.
     """
     required = (
@@ -74,6 +76,7 @@ def cache_loaders(
         "augmentation_device": str(device),
         "required_bytes": required,
         "cached_images": 0,
+        "cached_bytes": 0,
     }
     if not allowed or config.data.cache == "none" or device.type != "cuda":
         report["reason"] = (
@@ -86,24 +89,26 @@ def cache_loaders(
     budget = cache_budget(
         free_bytes, config.data.cache_max_fraction, config.data.cache_reserve_gib
     )
+    if budget_bytes is not None:
+        budget = min(budget, budget_bytes)
     report.update(free_bytes=free_bytes, budget_bytes=budget)
     if required > budget:
         report["reason"] = "insufficient_budget"
         return loaders, report
     try:
-        tensors = _allocate_and_fill(loaders, config, device)
+        tensors = _allocate_and_fill(loaders, config, device, names)
     except torch.cuda.OutOfMemoryError:
         report["reason"] = "cache_cuda_oom"
     else:
         cached = []
-        for index, (loader, tensor) in enumerate(zip(loaders, tensors, strict=True)):
+        for loader, tensor in zip(loaders, tensors, strict=True):
             loader.dataset.cached_images = tensor
             # CUDA tensors stay in the main process; no CUDA worker subprocesses.
             cached.append(
                 DataLoader(
                     loader.dataset,
                     batch_size=loader.batch_size,
-                    shuffle=index == 0,
+                    shuffle=isinstance(loader.sampler, RandomSampler),
                     num_workers=0,
                     pin_memory=False,
                     generator=loader.generator,
@@ -113,8 +118,9 @@ def cache_loaders(
             mode="cuda",
             reason="fits",
             cached_images=sum(len(loader.dataset) for loader in loaders),
+            cached_bytes=required,
         )
-        return (cached[0], cached[1]), report
+        return tuple(cached), report
     gc.collect()
     torch.cuda.empty_cache()
     warnings.warn(

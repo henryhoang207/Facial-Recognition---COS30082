@@ -17,6 +17,7 @@ from src.recognition.classification.evaluate import evaluate
 from src.recognition.classification.models import ArcFaceHead
 from src.recognition.classification.predictor import RecognitionEmbedder
 from src.recognition.classification.train import train
+from src.recognition.classification.verification import TrainingVerificationEvaluator
 from src.recognition.verification import (
     PairEvaluator,
     VerificationConfig,
@@ -67,6 +68,7 @@ def tiny_config(tmp_path, variant="a", device="cpu"):
         device=device,
         progress=False,
         amp_init_scale=1.0,
+        checkpoint_tiebreakers=[],
     )
     raw["verification"] = None
     return RecognitionConfig.model_validate(raw)
@@ -87,11 +89,14 @@ def test_yaml_cli_overrides_do_not_mutate_file(tmp_path):
             "0.005",
             "--epochs",
             "2",
+            "--amp-dtype",
+            "fp16",
             "--set",
             "preprocess.horizontal_flip=0.25",
         ]
     )
     assert cfg.training.lr == 0.005 and cfg.training.epochs == 2
+    assert cfg.training.amp_dtype == "fp16"
     assert cfg.preprocess.horizontal_flip == 0.25
     assert cfg.training.batch_size == 64
     assert path.read_bytes() == before
@@ -438,6 +443,222 @@ def test_shared_evaluator_cosine_euclidean_have_same_auc(tmp_path):
     assert metrics["cosine"]["auc"] == 1 and metrics["euclidean"]["auc"] == 1
     assert metrics["cosine"]["similarity_min"] == 1
     assert metrics["euclidean"]["distance_max"] == 0
+    vectors = np.stack(
+        [ColorEmbedder().embed(cv2.imread(str(p))) for p in evaluator.paths]
+    )
+    batch_metrics, _, _, _ = evaluator.evaluate_embeddings(vectors)
+    assert batch_metrics == metrics
+    with pytest.raises(ValueError, match="one embedding row"):
+        evaluator.evaluate_embeddings(vectors[:-1])
+
+
+def test_verification_reads_the_supplied_target_face_bbox(tmp_path):
+    from src.datasets.catalog import write_csv
+
+    config = verification_fixture(tmp_path)
+    for path in tmp_path.glob("*.png"):
+        face = cv2.imread(str(path))
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        frame[16:48, 16:48] = face
+        assert cv2.imwrite(str(path), frame)
+    boxes = tmp_path / "boxes.csv"
+    rows = [
+        {
+            "path": f"{name}.png",
+            "x1": 16,
+            "y1": 16,
+            "x2": 48,
+            "y2": 48,
+            "width": 64,
+            "height": 64,
+        }
+        for name in "abcd"
+    ]
+    write_csv(boxes, rows, list(rows[0]))
+    config = config.model_copy(update={"bbox_manifest": boxes})
+    evaluator = PairEvaluator(config, size=32, crop_scale=1, progress=False)
+    metrics, _, _, _ = evaluator.evaluate(ColorEmbedder())
+    assert metrics["cosine"]["auc"] == 1
+    assert evaluator.read_face(tmp_path / "a.png")[0, 0].tolist() == [0, 0, 255]
+    assert evaluator.bbox_manifest_sha256 is not None
+    write_csv(boxes, rows[:-1], list(rows[0]))
+    with pytest.raises(ValueError, match="cover every verification image"):
+        PairEvaluator(config, size=32, crop_scale=1, progress=False)
+
+
+def test_validation_threshold_reuse_rejects_a_changed_bbox_protocol(tmp_path):
+    from src.datasets.catalog import write_csv
+
+    verification = verification_fixture(tmp_path)
+    boxes = tmp_path / "boxes.csv"
+    rows = [
+        {"path": f"{name}.png", "x1": 0, "y1": 0, "x2": 32, "y2": 32} for name in "abcd"
+    ]
+    write_csv(boxes, rows, list(rows[0]))
+    verification = verification.model_copy(update={"bbox_manifest": boxes})
+    cfg = EvaluationConfig(
+        verification=verification,
+        models={},
+        baseline=True,
+        split="val",
+        size=32,
+        crop_scale=1,
+        device="cpu",
+        output_dir=tmp_path / "reports",
+        calibration=None,
+    )
+    output = VerificationRunner(cfg).run()
+    pairs = tmp_path / "test.txt"
+    pairs.write_text("a.png b.png 1\na.png d.png 0\n", encoding="utf-8")
+    rows[0].update(x1=1, y1=1, x2=31, y2=31)
+    write_csv(boxes, rows, list(rows[0]))
+    test = cfg.model_copy(
+        update={
+            "split": "test",
+            "calibration": output / "metrics.json",
+            "verification": verification.model_copy(update={"pairs": pairs}),
+        }
+    )
+    with pytest.raises(ValueError, match="preprocessing differs"):
+        VerificationRunner(test).run()
+
+
+@pytest.mark.parametrize(
+    "device,cache", [("cpu", "auto"), ("cuda", "auto"), ("cuda", "none")]
+)
+def test_training_verification_batches_match_single_image_and_refresh_weights(
+    tmp_path, monkeypatch, device, cache
+):
+    from types import SimpleNamespace
+
+    from torch import nn
+    from torch.nn import functional as F
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA GPU unavailable")
+    cfg = tiny_config(tmp_path, device=device)
+    pairs_dir = tmp_path / "verification"
+    pairs_dir.mkdir()
+    verification = verification_fixture(pairs_dir).model_copy(
+        update={
+            "batch_size": 3,
+            "cache": cache,
+        }
+    )
+    cfg = cfg.model_copy(update={"verification": verification})
+
+    class ColorEncoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = nn.Parameter(torch.ones(3))
+            self.calls = []
+
+        def embed(self, images):
+            assert images.dtype == torch.float32
+            self.calls.append(len(images))
+            return F.normalize(images.mean((2, 3)) * self.scale, dim=1)
+
+    encoder = ColorEncoder().to(device).eval()
+    task = SimpleNamespace(model=SimpleNamespace(encoder=encoder))
+    target = torch.device(device)
+    evaluator = TrainingVerificationEvaluator(cfg)
+    report = evaluator.prepare(target)
+    assert report["mode"] == (
+        "cuda" if device == "cuda" and cache == "auto" else "batch"
+    )
+    if report["mode"] == "cuda":
+        assert report["cached_images"] == 4
+        assert report["cached_bytes"] == 4 * 3 * 32**2
+        assert evaluator.loader.num_workers == 0
+
+        def no_decode(*args):
+            raise AssertionError("verification cache must survive across epochs")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(cv2, "imread", no_decode)
+            first = evaluator(task, target)
+            with torch.no_grad():
+                encoder.scale[0] = 3
+            second = evaluator(task, target)
+    else:
+        first = evaluator(task, target)
+        with torch.no_grad():
+            encoder.scale[0] = 3
+        second = evaluator(task, target)
+    assert encoder.calls == [3, 1, 3, 1]
+    assert first["val_auc"] == second["val_auc"] == 1
+
+    class Adapter:
+        @torch.inference_mode()
+        def embed(self, face):
+            image = FaceTransform(cfg.preprocess)(face)[None].to(target)
+            return encoder.embed(image)[0].cpu().numpy()
+
+    metrics, _, _, _ = evaluator.pairs.evaluate(Adapter())
+    assert second["val_score_threshold"] == pytest.approx(
+        metrics["cosine"]["score_threshold"], abs=1e-6
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+def test_verification_and_classification_share_the_total_cache_budget(
+    tmp_path, monkeypatch
+):
+    cfg = tiny_config(tmp_path, device="cuda")
+    pairs_dir = tmp_path / "verification"
+    pairs_dir.mkdir()
+    cfg = cfg.model_copy(
+        update={
+            "verification": verification_fixture(pairs_dir),
+            "data": cfg.data.model_copy(update={"cache_reserve_gib": 0}),
+        }
+    )
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (40000, 40000))
+    evaluator = TrainingVerificationEvaluator(cfg)
+    report = evaluator.prepare(torch.device("cuda"))
+    assert report["budget_bytes"] == 32000 and report["cached_bytes"] == 12288
+    a, b, _ = make_loaders(cfg)
+    _, classification = cache_loaders(
+        (a, b),
+        cfg,
+        torch.device("cuda"),
+        budget_bytes=report["budget_bytes"] - report["cached_bytes"],
+    )
+    assert classification["budget_bytes"] == 19712
+    assert classification["reason"] == "insufficient_budget"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU unavailable")
+def test_training_oom_fallback_also_releases_a_verification_only_cache(
+    tmp_path, monkeypatch
+):
+    cfg = tiny_config(tmp_path, device="cuda")
+    pairs_dir = tmp_path / "verification"
+    pairs_dir.mkdir()
+    cfg = cfg.model_copy(
+        update={
+            "verification": verification_fixture(pairs_dir),
+            "data": cfg.data.model_copy(update={"cache": "none"}),
+        }
+    )
+    original = Trainer._epoch
+    interrupted = False
+
+    def once(self, loader, *, train):
+        nonlocal interrupted
+        metrics = original(self, loader, train=train)
+        if train and not interrupted:
+            interrupted = True
+            raise torch.cuda.OutOfMemoryError("injected verification-cache pressure")
+        return metrics
+
+    monkeypatch.setattr(Trainer, "_epoch", once)
+    with pytest.warns(UserWarning, match="Releasing the cache"):
+        result = train(cfg)
+    report = json.loads((result.run_dir / "data_pipeline.json").read_text())
+    assert report["mode"] == report["verification"]["mode"] == "batch"
+    assert report["verification"]["cached_images"] == 0
+    assert result.history[0]["train_optimizer_steps"] > 0
 
 
 def test_verification_report_baseline_calibration_and_test_reuse(tmp_path):

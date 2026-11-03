@@ -17,7 +17,7 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 The YAML defines the baseline. Only explicitly supplied CLI arguments override it, and the command never writes those changes back to the YAML.
 
-Common flags include `--lr`, `--epochs`, `--batch-size`, `--weight-decay`, `--device`, `--num-workers`, `--seed`, `--patience`, `--embedding-dim`, `--data-root`, `--output-dir`, `--monitor`, `--mode`, `--evaluator`, `--optimizer`, `--scheduler`, `--warmup-epochs`, `--accumulation-steps`, `--eta-min`, and `--cache`.
+Common flags include `--lr`, `--epochs`, `--batch-size`, `--weight-decay`, `--device`, `--num-workers`, `--seed`, `--patience`, `--embedding-dim`, `--data-root`, `--output-dir`, `--monitor`, `--mode`, `--evaluator`, `--optimizer`, `--scheduler`, `--warmup-epochs`, `--accumulation-steps`, `--eta-min`, `--cache`, and `--amp-dtype`.
 
 Use `--set SECTION.KEY=VALUE` for other fields, including lists and booleans:
 
@@ -27,13 +27,19 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 Relative data and output paths, including path overrides, are resolved from the YAML directory. `--resume` is resolved from the command's working directory. Use absolute paths for datasets stored elsewhere.
 
-The supplied YAML files monitor `val_auc` with `mode: max`. Verification runs after classification validation in each epoch. To train without verification, select the alternative policy explicitly:
+The supplied YAML files prioritize `val_tar` with `mode: max`, then `val_auc`, then `val_loss`. Verification runs after classification validation in each epoch. To train without verification, select the alternative policy explicitly:
 
 ```bash
-python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --set verification=null --monitor val_loss --mode min
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --set verification=null --set "training.checkpoint_tiebreakers=[]" --monitor val_loss --mode min
 ```
 
 A missing monitored metric raises an error. Random initialization is the baseline. Use `--set model.initialization=imagenet` only after the group confirms the course requirements with the tutor.
+
+The local A/C baseline uses a maximum of 100 epochs with patience 5, BF16 mixed precision, and batch size 64 on the RTX 3060 12 GiB. Early stopping can end training before epoch 100. The cosine scheduler spans the configured 100-epoch budget unless overridden. Group backups remain on Google Drive; this command writes local run artifacts and does not upload them.
+
+Checkpoint priority is TAR at the configured empirical FPR target, then AUC, then classification validation loss. TAR measures acceptance of same-person pairs at the selected operating point; AUC summarizes ranking across thresholds. When TAR and AUC tie exactly, a loss decrease greater than 0.0001 can update `best.pt` and reset patience. A decrease in loss cannot override a worse TAR or AUC with the default zero tolerances. The ordered policy can prefer a new TAR best even if AUC decreases, so choose a different order if AUC must remain the primary objective. See [multi-metric checkpoint selection](training-guide.md#select-checkpoints-with-multiple-metrics) for the complete YAML schema and tolerance semantics.
+
+`early_stopping_monitor: null` follows this full ordered policy. Patience 5 now means five consecutive eligible epochs without improvement under that policy, rather than five epochs without AUC improvement. A/C validation losses use different objectives, so they serve as within-run tie-breakers and should not rank A against C. FPR values and score thresholds are recorded for diagnosis; neither is a monotonic quality metric to maximize blindly. Use only validation metrics for selection; keep test results out of the checkpoint policy.
 
 ## Configure the encoder and objective
 
@@ -63,11 +69,24 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 See the [shared optimizer-group instructions](training-guide.md#set-separate-learning-rates) for inheritance, validation, and per-group logging. Default warmup is off, accumulation is 1, and both groups inherit the shared LR.
 
-AMP applies only on CUDA. `train_optimizer_steps` records successful updates after overflow checks. The scheduler advances only when an epoch has an optimizer update. For a tiny smoke run, the initial scale can be lowered with `--set training.amp_init_scale=1.0`; the baseline uses 65536.
+AMP applies only on CUDA. Both supplied configurations use `amp: true` and `amp_dtype: bf16`. Eligible encoder and classifier operations use BF16 autocast; model weights, optimizer state, normalization, ArcFace angular calculations, and loss calculations stay FP32. This is mixed precision, not a conversion of all weights to BF16. Standalone classification evaluation, embedding inference, and the verification callback currently use FP32.
+
+BF16 requires native support on the selected GPU and disables GradScaler. `train_optimizer_steps` records optimizer updates, and the scheduler advances only when an epoch has an update. FP16 remains available with `--amp-dtype fp16` and enables GradScaler overflow checks. Its initial scale is configured by `amp_init_scale`, default 65536. This field has no effect in BF16 or FP32. Use `--set training.amp=false` for FP32 training. CPU runs use FP32 regardless of the AMP settings.
+
+Select BF16 explicitly for either model:
+
+```bash
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --device cuda --amp-dtype bf16
+python -m src.recognition.classification.train --config configs/recognition/model_c.yaml --device cuda --amp-dtype bf16
+```
+
+Check `environment.json` for `precision: bf16-mixed` and `gradient_scaling: false`. Keep `amp_dtype` unchanged when resuming; FP16 checkpoints from older configurations require FP16 settings to resume.
 
 ## Supply classification data
 
-The default configuration uses `data/VGGFace2` and `data/manifests/vggface2_classification.csv`. Verification pairs use unseen source-validation identities, with separate verification validation and test sets. Team photos in `data/faces/` are gallery data.
+The default configuration uses `data/VGGFace2` and the bbox protocol in `data/manifests/recognition_faces/protocol_bf22763a4f78/`. Verification pairs use unseen source-validation identities, with separate verification validation and test sets. Team photos in `data/faces/` are gallery data.
+
+The selected generation contains 480 classifier identities with 131,280 training, 16,496 classification-validation, and 16,422 classification-test images. Verification retains 30 identities per split and 3,000 positive plus 3,000 negative pairs per split. Its validation pairs reference 6,861 unique images. Another 13,832 source images remain in `review.csv` and are excluded from the active protocol. No classifier identity was lost. See [face bbox preparation](recognition-face-preparation.md) for generation, conservative filtering, review overrides, and independent validation.
 
 The classification CSV accepts these columns:
 
@@ -78,6 +97,10 @@ faces/alice_02.jpg,alice,val,session_2,,,,
 ```
 
 `path` is relative to `data.root`. `split` is `train`, `val`, or `test`. Session and bbox are optional. Supply all four bbox coordinates or leave all four empty. Without a bbox, the adapter treats the entire image as the face region.
+
+The base local VGGFace2 manifests and source DuckDB do not contain face bboxes or landmarks. The [original VGGFace2 release](https://github.com/ox-vgg/vgg_face2#pre-processing) provides loosely cropped faces and separate bbox/five-keypoint metadata in those crop coordinates. The selected local protocol uses offline YuNet detections to supply the missing bboxes without replacing the source images. Automatic acceptance requires exactly one plausible face; ambiguous and undetected images are retained for review rather than selecting the largest face.
+
+Classification reads boxes from its CSV. Both generic and batched verification read matching boxes through `verification.bbox_manifest` and require complete coverage of the selected pairs. They use the same shared square-crop function as the demo interface. Predicted keypoints remain in the detector audit; landmark alignment is not applied. Bboxes are automatic proposals rather than human-verified identity annotations. Use the same generation for A/C comparisons and start a fresh run when changing crop protocols.
 
 Both input modes decode images and call `src.common.face_crop.crop_face` on CPU. They emit RGB `uint8` crops. The trainer moves each batch to the model device before augmentation and normalization. App inference receives a BGR crop from that same shared crop function and applies equivalent RGB conversion and normalization without random augmentation.
 
@@ -101,6 +124,9 @@ data:
   cache: auto
   cache_max_fraction: 0.8
   cache_reserve_gib: 2.0
+verification:
+  batch_size: 64
+  cache: auto
 ```
 
 These are partial sections. Keep the other fields in the complete configuration.
@@ -109,11 +135,15 @@ These are partial sections. Keep the other fields in the complete configuration.
 
 Augmentation applies horizontal flip, affine rotation and translation, brightness, contrast, then saturation. Color factors are sampled uniformly from `[1 - value, 1 + value]`. Rotation is sampled within the configured positive and negative degree limits. Translation is bounded by the configured fraction of image width and height, independently on each axis. Affine sampling uses bilinear interpolation with black padding. Normalization follows augmentation and stays in float32 under AMP. Set any augmentation field to zero to disable it.
 
-With `data.cache: auto`, the entry point tries to cache **both classification train and validation splits** as unaugmented RGB `uint8` crops in VRAM after allocating the model. JPEG decoding, crop, and resize happen once on CPU during cache construction. Only the current augmented batch becomes float32. The program does not materialize all augmented images in VRAM or RAM. Test, verification-pair images, and team gallery photos are excluded from this cache.
+With `data.cache: auto`, the entry point tries to cache **both classification train and validation splits** as unaugmented RGB `uint8` crops in VRAM after allocating the model. JPEG decoding, crop, and resize happen once on CPU during cache construction. Only the current augmented batch becomes float32. The program does not materialize all augmented images in VRAM or RAM. Test images and team gallery photos are excluded.
+
+With `verification.cache: auto`, the built-in training evaluator separately caches the unique verification-validation crops. It reserves this smaller cache first and subtracts its allocation from the classification cache budget. All caches share the configured memory fraction and training reserve. Insufficient space falls back to decoding and transferring batches. `verification.cache` and `verification.batch_size` control the built-in A/C training evaluator; standalone generic verification still supports the single-image embedder interface for other model owners.
+
+Verification normalizes on GPU without augmentation and computes fresh FP32 embeddings in batches each epoch. It caches images, not embeddings, because encoder weights change during training. The selected protocol's 6,861 verification-validation images occupy about 246.23 MiB as RGB `uint8` crops. Together with the classification train/validation crops, raw cache storage is about 5.42 GiB at 112 by 112. Model state, optimizer state, activations, normalized batches, and CUDA workspace require additional memory.
 
 The crop storage requires `image_count * 3 * size * size` bytes. The cache budget is the smaller of `free_vram * cache_max_fraction` and `free_vram - cache_reserve_gib`. Free VRAM comes from [PyTorch's memory query](https://docs.pytorch.org/docs/stable/generated/torch.cuda.memory.mem_get_info.html). The reserve leaves room for activations, gradients, optimizer state, and CUDA workspace; it is a configurable estimate of training needs.
 
-If both splits do not fit, the program uses CPU data-loader batches, pinned-memory transfer, and GPU augmentation. It also falls back after a CUDA cache-allocation error. If training runs out of CUDA memory while the cache is active, it releases the cache and retries with batch streaming from the last completed epoch. The retry uses a new run directory and preserves the failed attempt. Without a saved epoch, it restarts from the original seed or the supplied resume checkpoint. Partial-epoch updates are discarded. A second OOM in streaming mode raises an error; reduce `--batch-size` and increase accumulation if needed.
+If both classification splits do not fit, the program uses CPU data-loader batches, pinned-memory transfer, and GPU augmentation. It also falls back after a CUDA cache-allocation error. If training or verification runs out of CUDA memory while either cache is active, it releases both caches and retries with batch streaming from the last completed epoch. The retry uses a new run directory and preserves the failed attempt. Without a saved epoch, it restarts from the original seed or the supplied resume checkpoint. Partial-epoch updates are discarded. A second OOM in streaming mode raises an error; reduce the training or verification batch size as appropriate.
 
 Run with automatic caching:
 
@@ -124,7 +154,7 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 Force batch streaming while retaining GPU augmentation:
 
 ```bash
-python -m src.recognition.classification.train --config configs/recognition/model_c.yaml --device cuda --cache none --num-workers 4 --set preprocess.rotation_degrees=5.0
+python -m src.recognition.classification.train --config configs/recognition/model_c.yaml --device cuda --cache none --set verification.cache=none --num-workers 4 --set preprocess.rotation_degrees=5.0
 ```
 
 Adjust the cache budget through CLI overrides:
@@ -135,9 +165,13 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 `num_workers` controls CPU decoding during cache construction or streaming. A completed CUDA cache uses zero loader workers and no pinned-memory copy because its images already reside on GPU. Shuffle still uses the checkpointed loader generator. Augmentation randomness uses the checkpointed device RNG. Cached crop tensors are rebuilt on startup and are not saved in checkpoints.
 
-The command prints the selected mode and writes `data_pipeline.json` in the run directory. It records the crop byte estimate, cache budget when queried, actual augmentation device, cached image count, and the reason for streaming. The cache policy is task-local; other task owners retain their existing loaders and preprocessing.
+The command prints the selected mode and writes `data_pipeline.json` in the run directory. It records classification cache information, a nested `verification` cache report, and `total_cached_bytes`. Reports include the crop byte estimate, cache budget when queried, actual device, cached image count, and the reason for streaming. The cache policy is task-local; other task owners retain their existing loaders and preprocessing.
 
-A real-data CUDA smoke check cached all 141,068 training and 17,682 classification-validation crops, using 5,974,080,000 bytes, about 5.56 GiB. A and C each completed one forward, backward, and optimizer update with batch size 64 and finite losses and gradients. Batch streaming with pinned CPU input and CUDA augmentation was also checked. These checks do not establish training convergence or recognition accuracy.
+A real-data CUDA smoke check before bbox filtering cached all 141,068 original training and 17,682 original classification-validation crops, using 5,974,080,000 bytes, about 5.56 GiB. A and C each completed one forward, backward, and optimizer update with batch size 64 and finite losses and gradients. Batch streaming with pinned CPU input and CUDA augmentation was also checked. These checks do not establish training convergence or recognition accuracy.
+
+A later check before bbox filtering cached all 7,026 original verification-validation crops and embedded them in 110 batches without decoding again during evaluation. It ran while holding an additional 5,974,080,000-byte CUDA allocation to represent classification crop storage. That allocation check did not decode the full classification dataset again or run a full training epoch.
+
+With the selected bbox protocol, A and C each completed a BF16 smoke run with 64 real training crops and 64 classification-validation crops. Projection outputs were BF16, weights updated and remained finite, and all 6,861 verification-validation images had matching bbox entries. Independent validation checked all 183,851 accepted boxes against original-image dimensions and matched them to the classification and verification catalogs. Full training convergence remains unmeasured.
 
 The folder adapter accepts detected face images in this layout when `data.manifest` is null:
 

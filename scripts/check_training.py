@@ -15,9 +15,11 @@ OWNED = [
     "src/datasets",
     "src/recognition/classification",
     "src/recognition/verification",
+    "src/recognition/preprocessing",
     "tests/test_training.py",
     "tests/test_datasets.py",
     "tests/test_recognition.py",
+    "tests/test_face_preparation.py",
     "scripts/check_training.py",
     "scripts/check_docs.py",
 ]
@@ -61,6 +63,7 @@ def main() -> None:
             "tests/test_training.py",
             "tests/test_recognition.py",
             "tests/test_datasets.py",
+            "tests/test_face_preparation.py",
         ]
         if args.include_liveness:
             tests.append("tests/test_liveness.py")
