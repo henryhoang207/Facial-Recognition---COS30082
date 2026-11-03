@@ -95,13 +95,20 @@ class TrainingVerificationEvaluator:
             ):
                 images = self.transform(images.to(device, non_blocking=True))
                 vectors.append(task.model.encoder.embed(images).cpu().numpy())
-        metrics, _, _, _ = self.pairs.evaluate_embeddings(np.concatenate(vectors))
+        embeddings = np.concatenate(vectors)
+        metrics, _, labels, scores = self.pairs.evaluate_embeddings(embeddings)
         selected = metrics[self.config.verification.selection_metric]
+        cosine = scores["cosine"]
         return {
             "val_auc": selected["auc"],
             "val_tar": selected["tar"],
             "val_fpr": selected["fpr"],
             "val_score_threshold": selected["score_threshold"],
+            "val_embedding_mean_norm": float(np.linalg.norm(embeddings.mean(0))),
+            "val_cosine_positive_mean": float(cosine[labels == 1].mean()),
+            "val_cosine_negative_mean": float(cosine[labels == 0].mean()),
+            "val_cosine_positive_std": float(cosine[labels == 1].std()),
+            "val_cosine_negative_std": float(cosine[labels == 0].std()),
         }
 
 

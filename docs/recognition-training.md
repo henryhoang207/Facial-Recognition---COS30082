@@ -4,6 +4,8 @@ Model A uses ResNet-18, a projection layer, and cross-entropy. Model C uses the 
 
 Start with the [shared training guide](training-guide.md) for environment setup, YAML settings, optimizer groups, warmup, accumulation, and resume. This guide covers recognition-specific commands and contracts.
 
+For Model C collapse experiments, use the separate [margin warmup and recovery guide](model-c-recovery-training.md). It documents the implemented gradient, regularization, normalization, and diagnostic controls without changing Model A's baseline.
+
 Local VGGFace2 manifests are connected. See [dataset preparation](dataset-preparation.md) for split rules and generation commands. Full training on the real dataset has not been completed. Software tests and CUDA smoke checks verify pipeline behavior and do not measure recognition quality.
 
 ## Run Model A or C

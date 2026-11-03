@@ -38,7 +38,19 @@ def build_evaluator(config: RecognitionConfig):
         }
         if config.training.early_stopping_monitor is not None:
             required.add(config.training.early_stopping_monitor.metric)
-        if required - {"val_loss", "val_accuracy"}:
+        available = {"val_loss", "val_accuracy"}
+        if config.model.variant == "c":
+            available.update(
+                {
+                    "val_classification_loss",
+                    "val_no_margin_loss",
+                    "val_prototype_mean_norm",
+                    "val_target_cosine",
+                    "val_fallback_fraction",
+                    "arcface_margin",
+                }
+            )
+        if required - available:
             raise ValueError("custom monitor requires --evaluator module:factory")
         return None
     module, separator, attribute = config.evaluator.partition(":")
@@ -97,7 +109,8 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
     optimizer = make_optimizer(task, config.training)
     metadata = {
         "task": "recognition_classification",
-        "model_config": config.model.model_dump(mode="json"),
+        # Omit newly added default controls so legacy default-policy resumes match.
+        "model_config": config.model.model_dump(mode="json", exclude_defaults=True),
         "preprocess_config": config.preprocess.model_dump(mode="json"),
         "data_config": config.data.model_dump(mode="json"),
         "class_to_idx": mapping,

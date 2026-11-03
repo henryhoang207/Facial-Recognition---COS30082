@@ -23,6 +23,14 @@ class StepResult:
 
 
 class TrainingTask(nn.Module, ABC):
+    def on_epoch_start(self, epoch: int) -> dict[str, float]:
+        """Set deterministic task schedules from the absolute one-based epoch."""
+        return {}
+
+    def early_stopping_ready(self, epoch: int) -> bool:
+        """Whether task-specific objective warmup has finished."""
+        return True
+
     @abstractmethod
     def step(self, batch: Any) -> StepResult:
         """Compute loss and metrics, without backward or optimizer operations."""

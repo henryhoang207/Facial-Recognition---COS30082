@@ -5,6 +5,17 @@ model:
   initialization: random
   arcface_scale: 30.0
   arcface_margin: 0.3
+  arcface_margin_warmup:
+    enabled: false
+    start_margin: 0.0
+    hold_epochs: 3
+    ramp_epochs: 5
+  arcface_gradient: analytic
+  prototype_regularization_weight: 0.0
+  rectify_wrong_class_logits: false
+  embedding_normalization: none
+  embedding_bn_affine: true
+  projection_bias: true
 preprocess:
   size: 112
   crop_scale: 1.0
@@ -60,7 +71,7 @@ training:
   amp_dtype: bf16
   amp_init_scale: 65536.0
   deterministic: false
-  num_workers: 0
+  num_workers: 4
   monitor: val_tar
   mode: max
   patience: 5

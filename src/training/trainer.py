@@ -398,6 +398,7 @@ class Trainer:
                 and self.bad_epochs >= self.config.patience
             ):
                 break
+            scheduled = self.task.on_epoch_start(epoch)
             learning_rate = self.optimizer.param_groups[0]["lr"]
             group_learning_rates = {
                 f"lr_{group.get('name', f'group_{index}')}": group["lr"]
@@ -409,6 +410,11 @@ class Trainer:
             row.update(group_learning_rates)
             row.update({f"train_{key}": value for key, value in train.items()})
             row.update({f"val_{key}": value for key, value in val.items()})
+            if row.keys() & scheduled.keys():
+                raise ValueError(
+                    "task schedule metrics must not overwrite epoch metrics"
+                )
+            row.update(scheduled)
             if self.evaluator is not None:
                 self.task.eval()
                 with torch.inference_mode():
@@ -499,6 +505,8 @@ class Trainer:
     def _early_stopping_active(self, epoch: int) -> bool:
         if self.config.early_stopping_start_epoch is not None:
             return epoch >= self.config.early_stopping_start_epoch
+        if not self.task.early_stopping_ready(epoch):
+            return False
         if self.config.warmup_epochs and self.scheduler is not None:
             return self.scheduler.last_epoch >= self.config.warmup_epochs
         return epoch > self.config.warmup_epochs

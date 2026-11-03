@@ -305,6 +305,8 @@ Implement one `TrainingTask` that owns the model and every trainable loss compon
 
 The trainer owns backward, AMP, clipping, accumulation, optimizer updates, scheduling, stopping, and checkpoint state. A task must not perform those operations itself.
 
+Tasks can override `on_epoch_start(epoch)` to update deterministic objective schedules from the absolute one-based epoch. Return a mapping of finite scalar schedule metrics to include in epoch history. Names must not overlap existing training, validation, or evaluator metrics. The hook runs before training and validation and after restoring an epoch-boundary checkpoint. Derive schedule values from the epoch rather than an unsaved counter. `early_stopping_ready(epoch)` can delay default patience counting while that objective changes; an explicit `early_stopping_start_epoch` overrides this readiness check. Model C uses these hooks for [margin warmup](model-c-recovery-training.md).
+
 Call `seed_everything` before creating the model and loaders. Move the task to its device before creating the optimizer. Build the optimizer and scheduler with the shared factories, then call `Trainer.fit`. Use explicit loader generators, `seed_worker`, and nonpersistent workers for reproducible epoch-boundary resume. The [runnable example](../examples/shared_training.py) shows the complete sequence.
 
 Supply an evaluator callback for metrics such as AUC that require the whole validation set. It receives `(task, device)` and returns named finite metrics. Do not average AUC across batches. Task packages own their dataset formats, sampling, inference interfaces, and evaluation protocol.
