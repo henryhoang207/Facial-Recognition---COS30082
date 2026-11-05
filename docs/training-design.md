@@ -15,11 +15,19 @@ A different task can accept a dictionary containing anchor, positive, and negati
 
 See the [shared training guide](training-guide.md) for a complete runnable example and configuration instructions.
 
+## Recognition package boundaries
+
+The ResNet-18 A/C implementation in `src/recognition/classification/` and the iResNet-34 B0/B1 notebook implementation in `src/recognition/identification/` use the same `Trainer.fit` engine and `TrainingTask` interface. B0/B1 retain `ExperimentConfig`, adapted through `trainer_config(seed)`, along with their P-by-K sampling, curriculum, and identity-disjoint evaluation. The notebooks launch one fixed-margin run at seed 42, with 20 CPU loading workers, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. `MetricLearningTask` owns the unchanged encoder, optional ArcFace head, objective, and reproducible mining state.
+
+Both packages contain configuration, data, and model modules with distinct responsibilities. The shared `embed(face)` pair API remains in `verification/evaluator.py`, with its CLI in `verification/run.py`. The notebook-specific batched metrics are in `identification/embedding_evaluation.py`; `MetricEmbedder` adapts B0/B1 inference checkpoints for the common pair CLI. Data splits and evaluation thresholds remain specific to each protocol. See the [recognition package map](../src/recognition/README.md).
+
+Both use the common version-1 checkpoint envelope. Training checkpoints contain task, optimizer, scaler, training configuration, metadata, RNG, and loader state; inference checkpoints contain the selected task snapshot and validation metrics. Optional policy state is saved alongside that envelope. Model-specific metadata and state-dict keys still differ, so the appropriate embedder loads each architecture. Legacy private-loop B0/B1 artifacts are retained but rejected for automatic resume; the notebook default is now `artifacts/main-cu130-margin-0.3-gpu-aug/`.
+
 ## Designs considered
 
 One design subclassed `Trainer` and required a `compute_step` hook. The selected design composes `Trainer` with `TrainingTask(nn.Module)` and `step(batch) -> StepResult`.
 
-Both approaches respected task ownership. An independent review selected composition because it puts all trainable state, including ArcFace weights and trainable loss components, inside one module. Contributors implement the objective without inheriting methods that could override AMP or checkpoint handling. The public interface consists of the task step, `fit`, and an optional evaluator callback.
+Both approaches respected task ownership. An independent review selected composition because it puts all trainable state, including ArcFace weights and trainable loss components, inside one module. Contributors implement the objective without inheriting methods that could override AMP or checkpoint handling. The public interface consists of the task step, `fit`, an optional evaluator callback, and optional `TrainingPolicy` hooks for experiment rules.
 
 The selected design also provides explicit encoder access for recognition evaluation and inference. `RecognitionTask` has `model.encoder`; generic tasks do not need an encoder or classification logits. A universal `Trainer(model, criterion)` interface was rejected because triplet mining and multi-output liveness models do not share one forward/loss signature.
 
@@ -27,11 +35,14 @@ The selected design also provides explicit encoder access for recognition evalua
 
 - The task owns the model and all trainable loss components.
 - The trainer owns optimization, AMP, scheduling, aggregation, stopping, and checkpoints.
+- An optional policy defines experiment-specific learning-rate adjustments, selection, stopping, and epoch annotations; its state is checkpointed by the trainer.
 - Each invocation owns a unique directory. Checkpoint replacement is atomic within that directory.
 - Dataset adapters own their input and batch formats. Recognition uses `src.common.face_crop.crop_face`.
 - The pair evaluator owns the verification and threshold protocol, using embeddings rather than classifier identities.
 
-Configuration is validated at the YAML and CLI boundary. Loss and metrics are checked before a checkpoint advances. Resume restores completed-epoch state and rejects incompatible configuration or metadata. Test evaluation is separate from validation-based model selection.
+Configuration is validated at each entry point: Pydantic YAML/CLI settings for A/C and a retained dataclass plus shared-config adapter for B0/B1. Loss and metrics are checked before a checkpoint advances. Resume restores completed-epoch state and rejects incompatible configuration or metadata. Test evaluation is separate from validation-based model selection.
+
+`StepResult.optimize=False` records a valid no-signal batch without backward or an optimizer update. B0 uses this when no selected triplet contributes a positive hinge. This preserves the mining protocol and avoids weight-decay-only updates. AMP overflow skips and actual successful updates remain trainer responsibilities.
 
 ## Optimizer groups and accumulation
 

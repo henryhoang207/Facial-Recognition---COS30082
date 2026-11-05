@@ -8,6 +8,14 @@ For Model C collapse experiments, use the separate [margin warmup and recovery g
 
 Local VGGFace2 manifests are connected. See [dataset preparation](dataset-preparation.md) for split rules and generation commands. Full training on the real dataset has not been completed. Software tests and CUDA smoke checks verify pipeline behavior and do not measure recognition quality.
 
+## Choose the recognition package
+
+`src/recognition/classification/` contains the ResNet-18 A/C CLI, shared-trainer task adapter, and app embedder. `src/recognition/identification/` contains the iResNet-34 B0/B1 notebook experiments. The shared pair API and comparison CLI remain in `src/recognition/verification/`, while `src/recognition/preprocessing/` prepares offline face-bbox manifests. The [package map](../src/recognition/README.md) lists their modules.
+
+The similarly named configuration, data, model, and training modules implement different protocols. A/C and B0/B1 share `src.training.Trainer.fit`, the `TrainingTask` interface, and the version-1 checkpoint envelope. B0/B1 keep `ExperimentConfig`, adapted through `trainer_config(seed)`, P-by-K sampling, identity-disjoint development identities, and single fixed-setting runs. The B0/B1 notebooks use 20 CPU workers to decode and crop images, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. `MetricLearningTask` computes their loss; experiment rules use the shared `TrainingPolicy` extension. Their iResNet-34 backbone and objectives are unchanged.
+
+For B0/B1, follow the [metric-learning notebook guide](../notebooks/metrics-learn/RECOGNITION.md) and import from `src.recognition.identification`. Its `embedding_evaluation.py` computes batched embedding verification and open-set identification metrics. The existing `verification/evaluator.py` supplies the `PairEvaluator` API described below, and `verification/run.py` remains the shared comparison CLI.
+
 ## Run Model A or C
 
 Activate the training environment and run from the repository root:
@@ -191,7 +199,7 @@ Train and validation must contain the same set of at least two identities. The t
 
 The loader rejects repeated train/validation paths, incompatible identity sets, and identity/session combinations shared across those splits. If the CSV provides `group` and `sha256`, it also rejects group or exact-content overlap. The VGGFace2 exporter supplies those fields after checking source images. External manifests without hashes do not trigger automatic image hashing in the loader.
 
-Thành's shared loader can replace this task-local adapter when its interface is available. Model B can use the same manifest and class mapping with its own identity sampler and triplet mining.
+Thành's shared loader can replace this task-local adapter when its interface is available. B0/B1 currently retain their own identity-disjoint manifests and P-by-K sampler; they do not adopt the A/C known-class validation split during this trainer migration.
 
 ## Save checkpoints and resume
 
@@ -267,16 +275,18 @@ Each invocation creates a unique directory under `reports/figures/recognition/` 
 
 Other flags include `--pairs`, `--data-root`, `--target-fpr`, `--split`, `--device`, `--output-dir`, `--calibration`, and `--set KEY=VALUE`.
 
-For Model B or a different checkpoint format, use a YAML model entry with a custom factory:
+For B0/B1, use their metric inference adapter as the YAML model factory:
 
 ```yaml
 models:
   B:
-    checkpoint: /absolute/model_b.pt
-    factory: your_package.predictor:TripletEmbedder
+    checkpoint: /absolute/path/to/weights/embedding.pt
+    factory: src.recognition.identification.predictor:MetricEmbedder
 ```
 
 The factory receives `(checkpoint, device=...)` and returns an object implementing `embed(face)`. The evaluator itself does not change. To supply a custom evaluator during recognition training, `--evaluator module:factory` calls `factory(recognition_config)`, which returns a callable `(task, device) -> dict[str, float]`.
+
+`MetricEmbedder` accepts a common metric `best.pt` or `embedding.pt` inference checkpoint and returns a finite normalized 256-dimensional vector. It requires the shared BGR uint8 crop of shape `(112, 112, 3)`, converts to RGB, and applies the saved normalization. Keep the pair CLI at `size: 112` and `crop_scale: 1.0`. Its public inference API rejects training `last.pt`, legacy metric checkpoints, and A/C artifacts; use the loader appropriate to each task. The common checkpoint envelope standardizes persistence without making model weights interchangeable.
 
 Cosine uses similarity as its score. Euclidean uses negative distance so a higher score consistently indicates a more likely match. Unit-norm embeddings produce the same ranking and expected AUC for both metrics, apart from numerical differences and ties.
 
@@ -304,7 +314,9 @@ The script checks Black, Ruff, and the owned tests. CUDA tests run when a GPU is
 | --- | --- |
 | `src/training/` | Shared training mechanics |
 | `src/recognition/classification/` | A, C, task-local data adapter, and inference |
-| `src/recognition/verification/` | ROC/AUC, model comparison, and threshold calibration |
+| `src/recognition/identification/` | B0/B1 notebook training, batched embedding evaluation, and metric inference |
+| `src/recognition/verification/` | Shared pair evaluator and comparison CLI |
+| `src/recognition/preprocessing/` | Offline face detection and recognition manifest preparation |
 | `src/datasets/` | Reproducible dataset manifest exports |
 | `configs/recognition/` | Recognition baseline configurations |
 | `requirements/` | Isolated training environment input and lockfile |

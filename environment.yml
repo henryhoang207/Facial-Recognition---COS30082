@@ -1,0 +1,8 @@
+name: mtrlearn
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - pip
+  - pip:
+      - -r requirements/training-cu130.lock.txt
