@@ -52,7 +52,7 @@ To regenerate the training lock after an intentional dependency change, run:
 uv pip compile requirements/training.in --universal --python-version 3.12 --torch-backend cu130 --emit-index-url --emit-find-links --output-file requirements/training-cu130.lock.txt
 ```
 
-Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/main-cu130-shared-trainer/`. Run their isolated software check with:
+Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/main-cu130-margin-0.3-gpu-aug/`. Run their isolated software check with:
 
 ```powershell
 .venv/Scripts/python.exe scripts/smoke_recognition_notebooks.py --kernel mtrlearn

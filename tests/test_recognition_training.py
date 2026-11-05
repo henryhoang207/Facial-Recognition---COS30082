@@ -151,28 +151,46 @@ def test_resume_replays_from_complete_epoch_with_matching_rng(
         training.train_run(replace(resumed_config, learning_rate=1e-4), prepared, 0.3)
 
 
-def test_arcface_sweep_and_frozen_threshold_final_artifacts(experiment):
+@pytest.mark.parametrize("method", ["triplet", "arcface"])
+def test_fixed_margin_experiment_calibrates_dev_and_freezes_test_thresholds(
+    experiment, method
+):
     config, prepared = experiment
-    config = replace(config, method="arcface", epochs=1, minimum_epochs=1)
-    sweep = training.run_sweep(config, prepared, margins=(0.3,), confirmation_seeds=())
-    assert (config.output_dir / "sweep_val.csv").is_file()
-    assert (config.output_dir / "graphs/sweep_val.png").is_file()
-    run = sweep.iloc[0]
+    config = replace(config, method=method, epochs=1, minimum_epochs=1)
+    runs = training.run_experiment(config, prepared)
+    assert len(runs) == 1
+    assert (config.output_dir / "runs.csv").is_file()
+    assert not (config.output_dir / "sweep_val.csv").exists()
+    run = runs.iloc[0]
+    assert run.margin == 0.3
+    assert run.threshold_source == "calibrated_on_dev"
+    selection = json.loads((config.output_dir / "selection.json").read_text())
+    assert selection["selected_margin"] == 0.3
+    assert selection["threshold"] == run.threshold
+    assert selection["threshold_source"] == "calibrated_on_dev"
     export = load_checkpoint(run.embedding_checkpoint)
     assert export["format_version"] == 1
     assert export["checkpoint_kind"] == "inference"
     assert export["task"] and all(key.startswith("model.") for key in export["task"])
     assert export["metadata"]["embedding_dim"] == 256
+    assert export["val_metrics"]["dev_threshold"] == run.threshold
+    assert export["training_config"]["patience"] == 3
     assert (
         export["metadata"]["environment_compatibility"]
         == training.environment_compatibility()
     )
     # Reload the saved table to exercise pandas 3 CSV types and runtime guards.
     results = training.evaluate_selected(
-        config, prepared, pd.read_csv(config.output_dir / "sweep_val.csv")
+        config, prepared, pd.read_csv(config.output_dir / "runs.csv")
     )
     assert results.iloc[0].threshold_from_dev == run.threshold
     assert (config.output_dir / "test/seed_42.json").is_file()
+    final = json.loads((config.output_dir / "test/seed_42.json").read_text())
+    assert final["verification"]["threshold"] == run.threshold
+    assert final["verification"]["threshold_source"] == "fixed"
+    assert final["dev_open_set"]["threshold_source"] == "calibrated_on_supplied_probes"
+    assert final["test_open_set"]["threshold_source"] == "fixed"
+    assert final["test_open_set"]["threshold"] == final["dev_open_set"]["threshold"]
     assert (config.output_dir / "test_results.csv").is_file()
     assert (config.output_dir / "test_summary.csv").is_file()
 
@@ -321,7 +339,14 @@ def test_auc_tie_break_saves_best_without_resetting_tar_patience(
 
     def metrics(*args, **kwargs):
         tar, auc = next(scores)
-        return {"tar_at_fmr": tar, "auc": auc, "eer": 0.2, "threshold": 0.5, "fmr": 0.0}
+        return {
+            "tar_at_fmr": tar,
+            "tar": tar,
+            "auc": auc,
+            "eer": 0.2,
+            "threshold": 0.3,
+            "fmr": 0.0,
+        }
 
     monkeypatch.setattr(training, "verification_metrics", metrics)
     result = training.train_run(config, prepared, margin=0.3)
@@ -342,7 +367,14 @@ def test_resume_finalizes_an_interrupted_early_stop_without_another_epoch(
 
     def metrics(*args, **kwargs):
         calls.append(1)
-        return {"tar_at_fmr": 0.5, "auc": 0.7, "eer": 0.2, "threshold": 0.5, "fmr": 0.0}
+        return {
+            "tar_at_fmr": 0.5,
+            "tar": 0.5,
+            "auc": 0.7,
+            "eer": 0.2,
+            "threshold": 0.3,
+            "fmr": 0.0,
+        }
 
     monkeypatch.setattr(training, "verification_metrics", metrics)
     original_save = training_engine._atomic_save
@@ -378,6 +410,7 @@ def test_early_stopping_waits_for_minimum_semi_hard_epochs(experiment, monkeypat
         "verification_metrics",
         lambda *args, **kwargs: {
             "tar_at_fmr": 0.5,
+            "tar": 0.5,
             "auc": 0.7,
             "eer": 0.2,
             "threshold": 0.5,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,18 +19,19 @@ class ExperimentConfig:
     identities_per_batch: int = 8
     images_per_identity: int = 4
     epochs: int = 60
+    margin: float = 0.3
     learning_rate: float = 3e-4
     minimum_learning_rate: float = 1e-6
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
     gradient_clip: float = 5.0
     minimum_epochs: int = 15
-    patience: int = 10
+    patience: int = 3
     minimum_semi_hard_epochs: int = 5
     scale: float = 64.0
     seed: int = 42
-    confirmation_seeds: tuple[int, ...] = (123, 2026)
-    num_workers: int = 2
+    confirmation_seeds: tuple[int, ...] = ()
+    num_workers: int = 20
     evaluation_batch_size: int = 64
     target_fmr: float = 1e-3
     target_fpir: float = 1e-2
@@ -47,7 +49,8 @@ class ExperimentConfig:
 
     @property
     def margins(self) -> tuple[float, ...]:
-        return (0.2, 0.3, 0.4) if self.method == "triplet" else (0.3, 0.4, 0.5)
+        """Keep explicit sweep callers compatible with the fixed-margin default."""
+        return (self.margin,)
 
     @property
     def batch_size(self) -> int:
@@ -68,6 +71,8 @@ class ExperimentConfig:
             raise ValueError("P and K must each be at least two.")
         if self.epochs < 1 or self.patience < 1 or self.num_workers < 0:
             raise ValueError("Invalid epoch, patience, or worker count.")
+        if not math.isfinite(self.margin) or self.margin <= 0:
+            raise ValueError("Loss margin must be finite and positive.")
         if self.max_batches_per_epoch is not None and self.max_batches_per_epoch < 1:
             raise ValueError("max_batches_per_epoch must be positive.")
         if not 0 < self.target_fmr < 1 or not 0 < self.target_fpir < 1:

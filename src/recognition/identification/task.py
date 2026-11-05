@@ -9,6 +9,7 @@ from torch import nn
 
 from src.training import MetricTotal, StepResult, TrainingTask
 
+from .augmentation import augment_training_batch
 from .config import ExperimentConfig
 from .losses import ArcFaceHead, TripletMetricLoss
 
@@ -55,6 +56,8 @@ class MetricLearningTask(TrainingTask):
 
     def step(self, batch) -> StepResult:
         images, labels = batch["image"], batch["label"]
+        if images.dtype == torch.uint8:
+            images = augment_training_batch(images, batch["augmentation_params"])
         embeddings = self.model(images)
         if self.head is None:
             loss, diagnostics = self.triplet(

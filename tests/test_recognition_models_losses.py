@@ -6,12 +6,81 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from src.recognition.identification.augmentation import augment_training_batch
+from src.recognition.identification.config import ExperimentConfig
 from src.recognition.identification.losses import (
     ArcFaceHead,
     CurriculumGate,
     TripletMetricLoss,
 )
 from src.recognition.identification.models import IResNet34
+from src.recognition.identification.task import MetricLearningTask
+
+
+def test_batch_augmentation_is_per_image_normalized_and_preserves_rng():
+    pixels = torch.tensor([[[[0, 200]], [[50, 100]], [[100, 0]]]], dtype=torch.uint8)
+    images = pixels.repeat(3, 1, 1, 1)
+    params = torch.tensor([[0, 1, 1], [1, 1, 1], [0, 1.1, 0.9]])
+    before = torch.get_rng_state().clone()
+    actual = augment_training_batch(images, params)
+    assert torch.equal(before, torch.get_rng_state())
+    expected = images.float().div(255)
+    torch.testing.assert_close(actual[0], expected[0].mul(2).sub(1))
+    torch.testing.assert_close(actual[1], actual[0].flip(-1))
+    bright = (expected[2] * 1.1).clamp(0, 1)
+    mean = (
+        (bright * bright.new_tensor([0.299, 0.587, 0.114])[:, None, None]).sum(0).mean()
+    )
+    color = ((bright - mean) * 0.9 + mean).clamp(0, 1)
+    torch.testing.assert_close(actual[2], color.mul(2).sub(1))
+    assert actual.dtype == torch.float32
+    assert float(actual.min()) >= -1 and float(actual.max()) <= 1
+    assert torch.equal(images, pixels.repeat(3, 1, 1, 1))
+
+
+@pytest.mark.parametrize("method", ["triplet", "arcface"])
+def test_metric_task_augments_raw_crops_before_encoder_forward(method):
+    class Encoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = torch.nn.Linear(3, 256)
+            self.seen_images = None
+
+        def forward(self, images):
+            self.seen_images = images.detach().clone()
+            return F.normalize(self.projection(images.mean((2, 3))), dim=1)
+
+    model = Encoder()
+    task = MetricLearningTask(
+        model, ExperimentConfig(method=method), class_count=2, margin=0.3, seed=42
+    )
+    images = torch.arange(4 * 3 * 4 * 4).reshape(4, 3, 4, 4).to(torch.uint8)
+    params = torch.tensor([[0, 1, 1], [1, 1, 1], [0, 1.1, 0.9], [1, 0.9, 1.1]])
+    result = task.step(
+        {
+            "image": images,
+            "augmentation_params": params,
+            "label": torch.tensor([0, 0, 1, 1]),
+        }
+    )
+    torch.testing.assert_close(
+        model.seen_images, augment_training_batch(images, params)
+    )
+    assert model.seen_images.dtype == torch.float32
+    assert torch.isfinite(result.loss)
+    result.loss.backward()
+    assert torch.isfinite(model.projection.weight.grad).all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_augmentation_matches_cpu_and_runs_in_fp32_under_autocast():
+    images = torch.arange(2 * 3 * 8 * 8).reshape(2, 3, 8, 8).to(torch.uint8)
+    params = torch.tensor([[1, 1.1, 0.9], [0, 0.9, 1.1]])
+    expected = augment_training_batch(images, params)
+    with torch.autocast("cuda", dtype=torch.float16):
+        actual = augment_training_batch(images.cuda(), params.cuda())
+    assert actual.device.type == "cuda" and actual.dtype == torch.float32
+    torch.testing.assert_close(actual.cpu(), expected, atol=2e-7, rtol=1e-6)
 
 
 def test_triplet_uses_squared_distances_and_all_directed_positives():

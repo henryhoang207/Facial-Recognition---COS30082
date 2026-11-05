@@ -1,4 +1,4 @@
-"""Reproducible training, checkpointing, margin sweeps, and final evaluation.
+"""Reproducible fixed-margin training, checkpointing, and final evaluation.
 
 References: FaceNet https://arxiv.org/abs/1503.03832 and
 ArcFace https://arxiv.org/abs/1801.07698. No pretrained weights are loaded.
@@ -483,6 +483,7 @@ def train_run(
         )
         return {
             "dev_tar": float(metrics["tar_at_fmr"]),
+            "dev_tar_at_threshold": float(metrics["tar"]),
             "dev_auc": float(metrics["auc"]),
             "dev_eer": float(metrics["eer"]),
             "dev_threshold": float(metrics["threshold"]),
@@ -575,7 +576,10 @@ def train_run(
         "dev_tar": best_row["dev_tar"],
         "dev_auc": best_row["dev_auc"],
         "dev_eer": best_row["dev_eer"],
+        "dev_tar_at_threshold": best_row["dev_tar_at_threshold"],
+        "dev_fmr": best_row["dev_fmr"],
         "threshold": best_row["dev_threshold"],
+        "threshold_source": "calibrated_on_dev",
         "switch_epoch": task.switch_epoch,
         "curriculum_completed": task.switch_epoch is not None
         and history[-1]["epoch"] >= task.switch_epoch,
@@ -600,13 +604,38 @@ def train_run(
     return result
 
 
+def run_experiment(config: ExperimentConfig, prepared: PreparedData) -> pd.DataFrame:
+    """Train one configured margin and seed, calibrating its threshold on dev."""
+    config.validate()
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    result = train_run(config, prepared, config.margin, config.seed)
+    runs = pd.DataFrame([{**result, "stage": "fixed"}])
+    runs.to_csv(config.output_dir / "runs.csv", index=False)
+    write_json(
+        config.output_dir / "selection.json",
+        {
+            "method": config.method,
+            "selected_margin": config.margin,
+            "threshold": result["threshold"],
+            "threshold_source": "calibrated_on_dev",
+            "criterion": "configured margin and seed; no margin sweep",
+            "checkpoint_criterion": "dev TAR at target FMR; ties: AUC",
+            "target_fmr": config.target_fmr,
+            "seed": config.seed,
+            "test_used_for_selection": False,
+            "environment_compatibility": environment_compatibility(),
+        },
+    )
+    return runs
+
+
 def run_sweep(
     config: ExperimentConfig,
     prepared: PreparedData,
     margins=None,
     confirmation_seeds=None,
 ) -> pd.DataFrame:
-    """Select margins using dev only, then repeat the selected margin with new seeds."""
+    """Opt into explicit margin comparisons; notebooks use ``run_experiment``."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
     margins = tuple(config.margins if margins is None else margins)
     confirmations = (
@@ -660,7 +689,7 @@ def run_sweep(
 def evaluate_selected(
     config: ExperimentConfig, prepared: PreparedData, sweep: pd.DataFrame
 ) -> pd.DataFrame:
-    """Evaluate only the selected margin, preserving each seed's dev threshold."""
+    """Evaluate trained runs using their unchanged dev-calibrated thresholds."""
     device = configure_runtime(config)
     selection = json.loads(
         (config.output_dir / "selection.json").read_text(encoding="utf-8")

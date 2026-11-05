@@ -39,10 +39,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from IPython.display import display, Image as DisplayImage
 from src.recognition.identification.config import ExperimentConfig
+from src.recognition.identification.augmentation import augment_training_batch
 from src.recognition.identification.data import prepare_manifests, FaceDataset, PKBatchSampler, make_loader
 from src.recognition.identification.models import IResNet34
 from src.recognition.identification.losses import TripletMetricLoss, ArcFaceHead
-from src.recognition.identification.training import configure_runtime, run_sweep, evaluate_selected
+from src.recognition.identification.training import configure_runtime, run_experiment, evaluate_selected
 from src.recognition.identification.notebook_utils import processing_preview, pilot_runtime, smoke_prepared, smoke_config
 
 print("Python:", sys.executable)
@@ -51,8 +52,8 @@ if not torch.cuda.is_available():
     raise RuntimeError("Select the Python (FaceGuard CUDA 13.0) kernel before running training.")
 print("GPU:", torch.cuda.get_device_name(0))'''),
         code(f'''SMOKE_TEST = os.environ.get("MTRLEARN_SMOKE", "0") == "1"
-RUN_FINAL_TEST = False  # Enable only after the margin-selection design is fixed.
-ARTIFACTS_ROOT = Path(os.environ.get("MTRLEARN_ARTIFACTS_ROOT", str(ROOT / "artifacts" / "main-cu130-shared-trainer")))
+RUN_FINAL_TEST = False  # Enable after fixing the final evaluation protocol.
+ARTIFACTS_ROOT = Path(os.environ.get("MTRLEARN_ARTIFACTS_ROOT", str(ROOT / "artifacts" / "main-cu130-margin-0.3-gpu-aug")))
 if not ARTIFACTS_ROOT.is_absolute():
     ARTIFACTS_ROOT = ROOT / ARTIFACTS_ROOT
 ARTIFACTS_ROOT = ARTIFACTS_ROOT.resolve()
@@ -64,11 +65,13 @@ CONFIG = ExperimentConfig(
     identities_per_batch=8,
     images_per_identity=4,
     epochs=60,
-    num_workers=0 if os.name == "nt" else 2,
+    patience=3,
+    margin=0.3,
+    num_workers=20,
     device="cuda",
     amp=True,
 )
-configure_runtime(CONFIG)
+DEVICE = configure_runtime(CONFIG)
 display(pd.Series(CONFIG.to_dict(), name="Experiment settings"))'''),
         markdown("## 2. Image processing and identity-disjoint manifests\n\n"
                  "Verify the source catalog, hash exact duplicates, and keep one representative without deleting originals. "
@@ -102,15 +105,20 @@ plt.close(figure)
 sampler = PKBatchSampler(prepared.train.label.to_numpy(), P=CONFIG.identities_per_batch,
                          K=CONFIG.images_per_identity, batches_per_epoch=1, seed=42)
 batch = next(iter(make_loader(prepared.train, CONFIG.data_root, train=True,
-                              batch_sampler=sampler, num_workers=0, seed=42)))
-print("Image tensor:", tuple(batch["image"].shape), batch["image"].dtype)
-print("Normalized range:", float(batch["image"].min()), float(batch["image"].max()))
+                              batch_sampler=sampler, num_workers=CONFIG.num_workers, seed=42)))
+print("CPU decoded crops:", tuple(batch["image"].shape), batch["image"].dtype, batch["image"].device)
+images = augment_training_batch(
+    batch["image"].to(DEVICE, non_blocking=True),
+    batch["augmentation_params"].to(DEVICE, non_blocking=True),
+)
+print("Augmented training tensor:", tuple(images.shape), images.dtype, images.device)
+print("Normalized range:", float(images.min()), float(images.max()))
 print("Images per identity:", torch.unique(batch["label"], return_counts=True)[1].tolist())
-del batch'''),
+del batch, images'''),
         markdown("## 3. Model and objective\n\n"
                  "The reusable source is in `src/recognition/identification/models.py` and `losses.py`. "
                  "The model uses iResNet stages [3,4,6,3], a 256-feature linear layer and final BatchNorm, "
-                 "followed by explicit FP32 L2 normalization. Each margin run starts from the same encoder initialization for its seed. "
+                 "followed by explicit FP32 L2 normalization. Each experiment starts from a fresh encoder initialized at seed 42. "
                  "`MetricLearningTask` uses the same `Trainer.fit` engine as A/C; the backbone and loss are unchanged. "
                  "The notebook retains `ExperimentConfig`, with shared engine settings adapted by `trainer_config(seed)`."),
         code('''model = IResNet34(embedding_dim=256)
@@ -120,25 +128,25 @@ print("Trainable encoder parameters:", f"{sum(p.numel() for p in model.parameter
 del model'''),
     ]
     if method == "triplet":
-        cells += [markdown("B0 uses squared Euclidean Triplet Loss on unit embeddings, margins **0.2, 0.3, 0.4**. "
+        cells += [markdown("B0 uses squared Euclidean Triplet Loss on unit embeddings with fixed margin **0.3**. "
                            "All B(K−1) directed positive pairs form the denominator, including missing semi-hard candidates as zero. "
                            "Random negatives are used first. After at least five random epochs, three consecutive fixed TRAIN probe checks "
                            "must pass ranking rate ≥0.75, mean distance gap ≥0.05 and feature spread >0.001. "
                            "The switch is one-way. Strict semi-hard selection has no hard-negative fallback; empty batches skip optimizer updates."),
-                  code('''objective = TripletMetricLoss(margin=0.2)
+                  code('''objective = TripletMetricLoss(margin=CONFIG.margin)
 print(objective)
-print("Margin sweep:", CONFIG.margins)
+print("Fixed loss margin:", CONFIG.margin)
 print("Squared distance: d2(a,p) = ||normalize(a) - normalize(p)||^2")''')]
     else:
-        cells += [markdown("B1 uses **ArcFace training classification** with angular margins **0.3, 0.4, 0.5 radians**, "
+        cells += [markdown("B1 uses **ArcFace training classification** with fixed angular margin **0.3 radians**, "
                            "scale **64**, normalized features/weights and the non-easy monotonic fallback. "
                            "The full training-identity head is removed for inference. Dev/test identities are unseen, "
                            "so no dev classification loss or head accuracy is used for selection."),
                   code('''objective = ArcFaceHead(num_classes=len(prepared.train_labels), embedding_dim=256,
-                        margin=0.3, scale=64, seed=100042)
+                        margin=CONFIG.margin, scale=CONFIG.scale, seed=100042)
 print(objective)
 print("Training class weights:", tuple(objective.weight.shape))
-print("Angular margin sweep (radians):", CONFIG.margins)
+print("Fixed angular margin (radians):", CONFIG.margin)
 del objective''')]
     cells += [
         markdown("## 4. Common GPU memory pilot\n\n"
@@ -149,44 +157,43 @@ del objective''')]
 print("Selected common profile:", CONFIG.identities_per_batch, "x", CONFIG.images_per_identity,
       "=", CONFIG.batch_size)
 display(pd.Series(json.loads((Path(CONFIG.artifacts_root) / "shared" / "runtime_pilot.json").read_text())))'''),
-        markdown("## 5. Model training and margin sweep\n\n"
-                 "AdamW peak LR 3e-4, five-epoch warmup, cosine decay, maximum 60 epochs and dev-only early stopping. "
-                 "Three margins are screened at seed 42; the selected margin is repeated at seeds 123 and 2026. "
-                 "The shared trainer owns backward, AMP, clipping, and optimizer updates; a training policy preserves the experiment rules. "
+        markdown("## 5. Model training with fixed settings\n\n"
+                 "AdamW peak LR 3e-4, five-epoch warmup, cosine decay, maximum 60 epochs and early-stopping patience **3**. "
+                 "Train one run at seed 42 with fixed loss margin **0.3**, without a margin sweep. Verification thresholds are calibrated on dev at the configured target FMR. "
+                 "Twenty CPU workers decode and crop images; batches move to CUDA for augmentation, normalization and model training. The shared trainer owns backward, AMP, clipping, and optimizer updates. Early stopping retains the minimum-epoch and Triplet curriculum gates. "
                  "Completed matching runs are reused; interruptions resume from the latest session's complete `last.pt` epoch. "
-                 "The default artifact root is `artifacts/main-cu130-shared-trainer/`; set `MTRLEARN_ARTIFACTS_ROOT` before launching "
+                 "The default artifact root is `artifacts/main-cu130-margin-0.3-gpu-aug/`; set `MTRLEARN_ARTIFACTS_ROOT` before launching "
                  "the kernel to choose another root. Existing private-loop checkpoints remain untouched and are not automatically resumed. "
                  "Change the artifact root when changing scientific settings; incompatible training contracts are rejected. "
                  "The final test is not used during this cell."),
-        code('''sweep_val = run_sweep(CONFIG, prepared)
-display(sweep_val[["method", "margin", "seed", "stage", "best_epoch", "dev_tar", "dev_auc", "dev_eer"]])
-print("Saved sweep:", CONFIG.output_dir / "sweep_val.csv")'''),
+        code('''runs = run_experiment(CONFIG, prepared)
+display(runs[["method", "margin", "seed", "stage", "best_epoch", "dev_tar", "dev_auc", "dev_eer"]])
+print("Saved run:", CONFIG.output_dir / "runs.csv")'''),
         markdown("## 6. Loss graphs and saved artifacts\n\n"
                  "Each run saves `history.csv`, loss/verification graphs, common-schema inference `best.pt`, "
-                 "resumable training `last.pt`, and encoder-only inference `embedding.pt` with preprocessing metadata and a dev threshold. "
+                 "resumable training `last.pt`, and encoder-only inference `embedding.pt` with preprocessing metadata and the dev-calibrated verification threshold. "
                  "Only `last.pt` is resumable. Each fit/resume call has a unique `trainer_runs/` session; stable `weights/` files are published after success. "
                  "`MetricEmbedder` loads `best.pt` or `embedding.pt` for the shared `embed(face)` interface. "
-                 "The experiment folder saves `sweep_val.csv`, `selection.json` and the margin-comparison graph. "
+                 "The experiment folder saves `runs.csv` and `selection.json` recording the fixed settings. "
                  "Smoke-test outputs must never be reported as trained-model performance."),
-        code('''display(DisplayImage(filename=str(CONFIG.output_dir / "graphs" / "sweep_val.png")))
-for run in sweep_val.itertuples():
+        code('''for run in runs.itertuples():
     history_path = Path(run.history_path)
     history = pd.read_csv(history_path)
     display(history.tail())
     display(DisplayImage(filename=str(history_path.parent / "graphs" / "loss.png")))
 print("Artifact root:", CONFIG.output_dir)
 print("Weights:", *sorted(str(path) for path in CONFIG.output_dir.glob("runs/*/weights/embedding.pt")), sep="\\n")'''),
-        markdown("## 7. Final test after dev selection\n\n"
-                 "Set `RUN_FINAL_TEST=True` only after fixing the selected margin/protocol. "
-                 "This evaluates only the selected margin, using each seed's unchanged dev threshold. "
-                 "Open-set gallery/probe protocols are shared, with a separate dev-calibrated search threshold. "
+        markdown("## 7. Final test after checkpoint selection\n\n"
+                 "Set `RUN_FINAL_TEST=True` only after fixing the evaluation protocol. "
+                 "This evaluates the trained checkpoint using its unchanged dev-calibrated verification threshold. "
+                 "Open-set gallery/probe evaluation calibrates a separate search threshold on dev and freezes it for test. "
                  "The training-class head is never used for unseen-person verification."),
         code('''if RUN_FINAL_TEST:
-    test_results = evaluate_selected(CONFIG, prepared, sweep_val)
+    test_results = evaluate_selected(CONFIG, prepared, runs)
     display(test_results)
     print("Saved:", CONFIG.output_dir / "test_results.csv")
 else:
-    print("Final test remains unused. Set RUN_FINAL_TEST=True after completing dev selection.")'''),
+    print("Final test remains unused. Set RUN_FINAL_TEST=True after fixing the evaluation protocol.")'''),
         markdown("References: [iResNet source](https://github.com/deepinsight/insightface/blob/master/recognition/arcface_torch/backbones/iresnet.py), "
                  "[FaceNet](https://arxiv.org/abs/1503.03832), [ArcFace](https://arxiv.org/abs/1801.07698), "
                  "[OpenMMLab angular fallback](https://github.com/open-mmlab/mmpretrain/blob/main/mmpretrain/models/heads/margin_head.py)."),

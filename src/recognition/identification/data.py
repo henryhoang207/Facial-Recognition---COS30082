@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset, Sampler
 
 from src.common.face_crop import crop_face
@@ -558,11 +558,13 @@ def prepare_manifests(
 
 
 class FaceDataset(Dataset):
-    """Load RGB faces with shared BGR square crop and per-draw local randomness.
+    """Decode/crop RGB faces on CPU with per-draw augmentation parameters.
 
     ``(index, draw_seed)`` indices supplied by :class:`PKBatchSampler` make image
     augmentation independent of worker scheduling, prefetch, or objective RNG.
     Plain integer indices use a stable per-image seed as a debug fallback.
+    Training samples retain uint8 crops for transfer and device augmentation;
+    evaluation samples retain deterministic normalized float32 inputs.
     """
 
     def __init__(
@@ -596,27 +598,26 @@ class FaceDataset(Dataset):
         height, width = bgr.shape[:2]
         cropped = crop_face(bgr, (0, 0, width, height), size=112, scale=1.0)
         rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-        if self.train:
-            rng = random.Random(draw_seed)
-            augmented = Image.fromarray(rgb)
-            if rng.random() < 0.5:
-                augmented = ImageOps.mirror(augmented)
-            if rng.random() < 0.5:
-                augmented = ImageEnhance.Brightness(augmented).enhance(
-                    rng.uniform(0.9, 1.1)
-                )
-                augmented = ImageEnhance.Contrast(augmented).enhance(
-                    rng.uniform(0.9, 1.1)
-                )
-            rgb = np.asarray(augmented)
-        values = np.asarray(rgb, dtype=np.float32).transpose(2, 0, 1) / 127.5 - 1.0
-        tensor = torch.from_numpy(np.ascontiguousarray(values))
-        return {
-            "image": tensor,
+        values = np.ascontiguousarray(rgb.transpose(2, 0, 1))
+        tensor = torch.from_numpy(values)
+        sample = {
+            "image": tensor if self.train else tensor.float().div_(127.5).sub_(1),
             "label": int(self.labels[index]),
             "rel_path": relative,
             "identity_id": self.identity_ids[index],
         }
+        if self.train:
+            rng = random.Random(draw_seed)
+            flip = float(rng.random() < 0.5)
+            brightness, contrast = (
+                (rng.uniform(0.9, 1.1), rng.uniform(0.9, 1.1))
+                if rng.random() < 0.5
+                else (1.0, 1.0)
+            )
+            sample["augmentation_params"] = torch.tensor(
+                [flip, brightness, contrast], dtype=torch.float32
+            )
+        return sample
 
 
 class PKBatchSampler(Sampler):
@@ -703,12 +704,14 @@ def make_loader(
     notebook: bool = False,
     seed: int = 42,
 ) -> DataLoader:
-    """Use zero notebook workers or two spawn workers for importable train scripts.
+    """Decode CPU crops with 20 spawn workers unless explicitly overridden.
 
     Scripts using workers must call this under a main guard (and may call
     ``multiprocessing.freeze_support()``). No live database connection is retained.
+    Notebook workers import this module; ``notebook`` no longer disables them.
     """
-    workers = (0 if notebook else 2) if num_workers is None else int(num_workers)
+    del notebook
+    workers = 20 if num_workers is None else int(num_workers)
     if workers < 0:
         raise ValueError("num_workers must be nonnegative.")
     if train and batch_sampler is None:

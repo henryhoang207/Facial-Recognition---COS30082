@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from .augmentation import augment_training_batch
 from .config import ExperimentConfig
 from .data import FaceDataset, PKBatchSampler, PreparedData, make_loader
 from .losses import ArcFaceHead, TripletMetricLoss
@@ -212,13 +213,17 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
                         )
                     )
                 )
-                images, labels = batch["image"].to(device), batch["label"].to(device)
+                images = augment_training_batch(
+                    batch["image"].to(device),
+                    batch["augmentation_params"].to(device),
+                )
+                labels = batch["label"].to(device)
                 model = IResNet34(config.embedding_dim).to(device).train()
                 head = (
                     ArcFaceHead(
                         len(prepared.train_labels),
                         config.embedding_dim,
-                        margin=0.4,
+                        margin=config.margin,
                         scale=config.scale,
                     ).to(device)
                     if method == "arcface"
@@ -252,7 +257,7 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
                             head(embeddings, labels), labels
                         )
                         if head is not None
-                        else TripletMetricLoss(0.3)(
+                        else TripletMetricLoss(config.margin)(
                             embeddings, labels, strategy="random"
                         )[0]
                     )

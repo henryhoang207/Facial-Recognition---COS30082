@@ -16,6 +16,7 @@ import torch
 from PIL import Image, UnidentifiedImageError
 
 from src.recognition.identification import data
+from src.recognition.identification.augmentation import augment_training_batch
 
 
 @pytest.fixture
@@ -243,14 +244,24 @@ def test_draw_token_augmentation_is_local_and_reproducible(tmp_path):
     dataset = data.FaceDataset(face_frame(), tmp_path, train=True)
     random.seed(95)
     before = random.getstate()
-    flipped = dataset[(0, 1)]["image"]
+    first = dataset[(0, 1)]
     assert random.getstate() == before
-    plain = dataset[(0, 2)]["image"]
+    second = dataset[(0, 2)]
+    assert first["image"].dtype == torch.uint8
+    assert first["image"].device.type == "cpu"
+    assert torch.equal(first["image"], second["image"])
+
+    def transformed(sample):
+        return augment_training_batch(
+            sample["image"].unsqueeze(0), sample["augmentation_params"].unsqueeze(0)
+        )[0]
+
+    flipped, plain = transformed(first), transformed(second)
     torch.testing.assert_close(flipped, plain.flip(-1))
     random.seed(100)
     np.random.seed(200)
     torch.manual_seed(300)
-    assert torch.equal(dataset[(0, 1)]["image"], flipped)
+    assert torch.equal(transformed(dataset[(0, 1)]), flipped)
     assert torch.equal(dataset[0]["image"], dataset[0]["image"])
     evaluation = data.FaceDataset(face_frame(), tmp_path, train=False)
     assert torch.equal(evaluation[(0, 1)]["image"], evaluation[(0, 900)]["image"])
@@ -307,12 +318,24 @@ def test_pk_invalid_small_batches_fail_clearly(labels, P, K):
         data.PKBatchSampler(labels, P=P, K=K)
 
 
-def test_notebook_loader_uses_seeded_pk_tokens_without_worker_options(tiny_faces):
+def test_notebook_loader_defaults_to_20_cpu_workers_and_allows_smoke_override(
+    tiny_faces,
+):
     root, output = tiny_faces
     prepared = prepare(root, output)
     sampler = data.PKBatchSampler(prepared.train.label, P=2, K=2, batches_per_epoch=1)
     loader = data.make_loader(
         prepared.train, root, train=True, batch_sampler=sampler, notebook=True
+    )
+    assert loader.num_workers == 20 and loader.persistent_workers
+    assert loader.multiprocessing_context.get_start_method() == "spawn"
+    loader = data.make_loader(
+        prepared.train,
+        root,
+        train=True,
+        batch_sampler=sampler,
+        notebook=True,
+        num_workers=0,
     )
     assert loader.num_workers == 0 and not loader.persistent_workers
     assert loader.prefetch_factor is None
@@ -322,6 +345,10 @@ def test_notebook_loader_uses_seeded_pk_tokens_without_worker_options(tiny_faces
         batch["image"], torch.stack([item["image"] for item in expected])
     )
     assert batch["rel_path"] == [item["rel_path"] for item in expected]
+    assert torch.equal(
+        batch["augmentation_params"],
+        torch.stack([item["augmentation_params"] for item in expected]),
+    )
 
 
 def test_spawn_workers_preserve_per_draw_augmentation_across_epochs(tiny_faces):
@@ -356,3 +383,10 @@ def test_spawn_workers_preserve_per_draw_augmentation_across_epochs(tiny_faces):
             assert first["rel_path"] == second["rel_path"]
             assert torch.equal(first["label"], second["label"])
             assert torch.equal(first["image"], second["image"])
+            assert torch.equal(
+                first["augmentation_params"], second["augmentation_params"]
+            )
+            assert torch.equal(
+                augment_training_batch(first["image"], first["augmentation_params"]),
+                augment_training_batch(second["image"], second["augmentation_params"]),
+            )

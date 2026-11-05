@@ -4,7 +4,7 @@ Use [triplet_loss.ipynb](triplet_loss.ipynb) for B0 and [arcface.ipynb](arcface.
 
 The notebook implementation lives in `src/recognition/identification/`. Import configuration, data preparation, models, losses, training, and notebook helpers from `src.recognition.identification`. Batched embedding metrics live in `src.recognition.identification.embedding_evaluation`; `src.recognition.verification.evaluator` provides the separate shared `embed(face)` pair-evaluation API. See the [package map](../../src/recognition/README.md) for the complete module layout.
 
-The A/C classification package uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the notebook sweep protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
+The A/C classification package uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the fixed-setting notebook protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
 
 From the repository root in PowerShell:
 
@@ -18,22 +18,22 @@ Select **Python (FaceGuard CUDA 13.0)** as the notebook kernel (kernel ID `mtrle
 
 The earlier `scripts/setup_mtrlearn.ps1` command is a compatibility wrapper for the shared setup. An existing Conda `mtrlearn` environment is left unchanged, while the notebook kernel now points to `.venv`. For a fresh optional Conda setup, `environment.yml` creates Python 3.14 and installs the same lockfile; register its interpreter with a different kernel ID if you want both interpreters available. Do not install these dependencies into Conda base.
 
-Run one notebook at a time so the two training jobs do not compete for GPU memory. Each screens three margins at seed 42, then repeats its selected margin at seeds 123 and 2026. Each run starts from a fresh random encoder. The two notebooks reuse the same identity-disjoint manifests and evaluation pairs. Full training can take many hours; the notebook does not automatically estimate scientific results from its smoke run.
+Run one notebook at a time so the two training jobs do not compete for GPU memory. Each trains one run at seed 42, using fixed loss margin `0.3`. The notebooks do not sweep margins and do not launch confirmation-seed runs. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. Each run starts from a fresh random encoder. The two notebooks reuse the same identity-disjoint manifests and evaluation pairs. Full training can take many hours; the notebook does not automatically estimate scientific results from its smoke run.
 
-The default physical batch size is 32, P=8 and K=4. A disposable GPU pilot tests both objectives and falls back to the common batch-16 profile if necessary. Windows notebooks use zero data workers to avoid notebook spawn issues; importable scripts can use the default two workers. Source images and the original DuckDB catalog are read-only. Manifest preparation only removes duplicate entries from new CSVs.
+The default physical batch size is 32, P=8 and K=4. A disposable GPU pilot tests both objectives and falls back to the common batch-16 profile if necessary. Twenty CPU data-loader workers decode and crop images as RGB `uint8`. Pinned batches move to CUDA, where horizontal flip, color augmentation, normalization, and model training run. Evaluation has no random augmentation. Early-stopping patience is three eligible epochs without improvement; the existing minimum-epoch and Triplet curriculum gates still apply. The bounded smoke check overrides the worker count to zero. Source images and the original DuckDB catalog are read-only. Manifest preparation only removes duplicate entries from new CSVs.
 
 Outputs are organized as follows:
 
 ```text
 artifacts/shared/manifests/         shared splits, exact-hash cache, pairs, probe
 
-artifacts/main-cu130-shared-trainer/
+artifacts/main-cu130-margin-0.3-gpu-aug/
   shared/runtime_pilot.json         measured GPU memory profile
   triplet/                         B0 outputs
   arcface/                         B1 outputs
-    sweep_val.csv                  dev-only margin and seed results
-    selection.json                 selected margin and criterion
-    graphs/                        processing preview and margin plot
+    runs.csv                       fixed-setting run and dev results
+    selection.json                 fixed margin and evaluation protocol
+    graphs/                        processing preview
     runs/margin_0.3_seed_42/
       config.json                  settings, environment, initialization hash
       history.csv                  training and dev metrics by epoch
@@ -58,7 +58,7 @@ All checkpoint files use `format_version=1`. `last.pt` has `checkpoint_kind="tra
 
 Runs record environment versions, configuration, dataset fingerprints, and a `training_contract` marker. Changes to these contracts reject reuse or resume; choose a fresh `artifacts_root` for a different experiment. Existing private-loop checkpoints, including earlier outputs under `artifacts/main-cu130/`, are not resumed or converted automatically. They remain untouched. The new default root keeps the shared-trainer runs separate. Checkpoints load with `weights_only=True`.
 
-`RUN_FINAL_TEST=False` keeps the held-out test unused during model selection. Enable it only after fixing the protocol and selecting margins on dev. ArcFace's training-class head is never evaluated against unseen dev/test identities and is excluded from `embedding.pt`. The Triplet result records whether the exported checkpoint actually received semi-hard updates, even if a later point in the same run completed the curriculum.
+`RUN_FINAL_TEST=False` keeps the held-out test unused during model selection. Enable it only after fixing the evaluation protocol. Held-out verification reuses the selected checkpoint's dev-calibrated threshold. Open-set search calibrates its own threshold on dev and freezes it for test. ArcFace's training-class head is never evaluated against unseen dev/test identities and is excluded from `embedding.pt`. The Triplet result records whether the exported checkpoint actually received semi-hard updates, even if a later point in the same run completed the curriculum.
 
 For the app or the shared pair CLI, use the provided inference adapter:
 
