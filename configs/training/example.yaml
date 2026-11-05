@@ -21,6 +21,7 @@ training:
   seed: 42
   device: cpu
   amp: false
+  amp_dtype: fp16
   amp_init_scale: 65536.0
   deterministic: false
   num_workers: 0
@@ -28,6 +29,8 @@ training:
   mode: min
   patience: null
   min_delta: 0.0
+  checkpoint_tiebreakers: []
+  early_stopping_monitor: null
   early_stopping_start_epoch: null
   clip_grad_norm: null
   progress: true

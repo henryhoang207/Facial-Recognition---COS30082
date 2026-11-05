@@ -1,10 +1,14 @@
 """Train A/C without changing another recognition owner's modules."""
 
+import gc
 import importlib
 import json
 import shutil
+import warnings
 from datetime import date
 from pathlib import Path
+
+import torch
 
 from src.training import (
     Trainer,
@@ -15,11 +19,12 @@ from src.training import (
 )
 from src.training.config import resolve_device
 
+from .cache import cache_loaders
 from .config import RecognitionConfig, load_config
 from .data import make_loaders
 from .models import ClassificationModel
 from .task import RecognitionTask
-from .verification import make_evaluator
+from .verification import TrainingVerificationEvaluator, make_evaluator
 
 
 def build_evaluator(config: RecognitionConfig):
@@ -27,7 +32,25 @@ def build_evaluator(config: RecognitionConfig):
     if config.evaluator is None:
         if config.verification is not None:
             return make_evaluator(config)
-        if config.training.monitor not in {"val_loss", "val_accuracy"}:
+        required = {
+            config.training.monitor,
+            *(item.metric for item in config.training.checkpoint_tiebreakers),
+        }
+        if config.training.early_stopping_monitor is not None:
+            required.add(config.training.early_stopping_monitor.metric)
+        available = {"val_loss", "val_accuracy"}
+        if config.model.variant == "c":
+            available.update(
+                {
+                    "val_classification_loss",
+                    "val_no_margin_loss",
+                    "val_prototype_mean_norm",
+                    "val_target_cosine",
+                    "val_fallback_fraction",
+                    "arcface_margin",
+                }
+            )
+        if required - available:
             raise ValueError("custom monitor requires --evaluator module:factory")
         return None
     module, separator, attribute = config.evaluator.partition(":")
@@ -40,18 +63,54 @@ def build_evaluator(config: RecognitionConfig):
 
 
 def train(config: RecognitionConfig, *, resume: Path | None = None):
+    directory = new_run_dir(config.output_dir, f"recognition_{config.model.variant}")
+    pipeline = {}
+    try:
+        return _train_once(config, resume, directory, pipeline, cache_allowed=True)
+    except torch.cuda.OutOfMemoryError:
+        if (
+            pipeline.get("mode") != "cuda"
+            and pipeline.get("verification", {}).get("mode") != "cuda"
+        ):
+            raise
+        warnings.warn(
+            "CUDA ran out of memory with cached crops. Releasing the cache and "
+            "retrying with batch streaming from the last completed epoch, or "
+            "the original initialization if no epoch was saved.",
+            stacklevel=2,
+        )
+    # Leave the exception scope first to release its traceback and live CUDA tensors.
+    gc.collect()
+    torch.cuda.empty_cache()
+    last = directory / "last.pt"
+    (directory / "data_pipeline.json").write_text(
+        json.dumps({**pipeline, "outcome": "training_cuda_oom"}, indent=2),
+        encoding="utf-8",
+    )
+    return _train_once(
+        config,
+        last if last.exists() else resume,
+        new_run_dir(config.output_dir, f"recognition_{config.model.variant}_streaming"),
+        pipeline,
+        cache_allowed=False,
+    )
+
+
+def _train_once(config, resume, directory, pipeline, *, cache_allowed):
     evaluator = build_evaluator(config)
     seed_everything(config.training.seed, config.training.deterministic)
     train_loader, val_loader, mapping = make_loaders(config)
     task = RecognitionTask(
         ClassificationModel(
             config.model, len(mapping), load_initial_weights=resume is None
-        )
+        ),
+        config.preprocess,
     ).to(resolve_device(config.training.device))
     optimizer = make_optimizer(task, config.training)
     metadata = {
         "task": "recognition_classification",
-        "model_config": config.model.model_dump(mode="json"),
+        # Omit newly added default controls so legacy default-policy resumes match.
+        "model_config": config.model.model_dump(mode="json", exclude_defaults=True),
         "preprocess_config": config.preprocess.model_dump(mode="json"),
         "data_config": config.data.model_dump(mode="json"),
         "class_to_idx": mapping,
@@ -59,6 +118,14 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
         "verification": (
             config.verification.model_dump(mode="json")
             if config.verification is not None
+            else None
+        ),
+        "verification_inputs": (
+            {
+                "pairs_sha256": evaluator.pairs.pairs_sha256,
+                "bbox_manifest_sha256": evaluator.pairs.bbox_manifest_sha256,
+            }
+            if isinstance(evaluator, TrainingVerificationEvaluator)
             else None
         ),
         "splits": {
@@ -76,7 +143,6 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
             for name, loader in (("train", train_loader), ("val", val_loader))
         },
     }
-    directory = new_run_dir(config.output_dir, f"recognition_{config.model.variant}")
     trainer = Trainer(
         task,
         optimizer,
@@ -86,7 +152,34 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
         metadata=metadata,
         evaluator=evaluator,
     )
+    verification_report = None
+    remaining_budget = None
+    if isinstance(evaluator, TrainingVerificationEvaluator):
+        verification_report = evaluator.prepare(trainer.device, allowed=cache_allowed)
+        pipeline["verification"] = verification_report
+        if "budget_bytes" in verification_report:
+            remaining_budget = (
+                verification_report["budget_bytes"]
+                - verification_report["cached_bytes"]
+            )
+    (train_loader, val_loader), report = cache_loaders(
+        (train_loader, val_loader),
+        config,
+        next(task.parameters()).device,
+        allowed=cache_allowed,
+        budget_bytes=remaining_budget,
+    )
+    if verification_report is not None:
+        report["verification"] = verification_report
+    report["total_cached_bytes"] = report["cached_bytes"] + (
+        verification_report["cached_bytes"] if verification_report else 0
+    )
+    pipeline.update(report)
+    print(json.dumps({"data_pipeline": report}))
     result = trainer.fit(train_loader, val_loader, resume=resume)
+    (directory / "data_pipeline.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
     (directory / "resolved_config.json").write_text(
         config.model_dump_json(indent=2), encoding="utf-8"
     )

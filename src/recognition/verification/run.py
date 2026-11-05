@@ -15,8 +15,7 @@ from pydantic import Field
 from src.training.config import Settings, override_config, read_yaml
 from src.training.trainer import new_run_dir
 
-from .config import VerificationConfig
-from .evaluator import PairEvaluator
+from .evaluator import PairEvaluator, VerificationConfig
 
 
 class ModelSpec(Settings):
@@ -81,6 +80,8 @@ class VerificationRunner:
             if (
                 calibration["size"] != config.size
                 or calibration["crop_scale"] != config.crop_scale
+                or calibration.get("bbox_manifest_sha256")
+                != evaluator.bbox_manifest_sha256
             ):
                 raise ValueError(
                     "test preprocessing differs from validation calibration"
@@ -102,6 +103,7 @@ class VerificationRunner:
             "split": config.split,
             "protocol": "1:1 verification; not a calibrated 1:N gallery threshold",
             "pairs_sha256": evaluator.pairs_sha256,
+            "bbox_manifest_sha256": evaluator.bbox_manifest_sha256,
             "target_fpr": config.verification.target_fpr,
             "size": config.size,
             "crop_scale": config.crop_scale,
@@ -240,6 +242,11 @@ def main(argv: list[str] | None = None) -> None:
                 update={
                     "root": (base / config.verification.root).resolve(),
                     "pairs": (base / config.verification.pairs).resolve(),
+                    "bbox_manifest": (
+                        (base / config.verification.bbox_manifest).resolve()
+                        if config.verification.bbox_manifest is not None
+                        else None
+                    ),
                 }
             ),
             "models": {

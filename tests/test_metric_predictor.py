@@ -9,8 +9,8 @@ import pytest
 import torch
 from torch import nn
 
-from src.recognition.verification import predictor
-from src.recognition.verification.config import VerificationConfig
+from src.recognition.identification import predictor
+from src.recognition.verification import VerificationConfig
 from src.recognition.verification.run import (
     EvaluationConfig,
     ModelSpec,
@@ -248,7 +248,7 @@ def test_shared_verification_runner_loads_metric_factory(tmp_path, common_payloa
         models={
             "triplet": ModelSpec(
                 checkpoint=checkpoint,
-                factory="src.recognition.verification.predictor:MetricEmbedder",
+                factory="src.recognition.identification.predictor:MetricEmbedder",
             )
         },
         baseline=False,

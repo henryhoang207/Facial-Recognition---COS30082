@@ -6,8 +6,12 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from src.recognition.verification.losses import ArcFaceHead, CurriculumGate, TripletMetricLoss
-from src.recognition.verification.models import IResNet34
+from src.recognition.identification.losses import (
+    ArcFaceHead,
+    CurriculumGate,
+    TripletMetricLoss,
+)
+from src.recognition.identification.models import IResNet34
 
 
 def test_triplet_uses_squared_distances_and_all_directed_positives():
@@ -31,7 +35,9 @@ def test_semi_hard_missing_pairs_remain_in_denominator():
     angles = torch.tensor([0.0, math.pi / 6, math.radians(70.0)])
     embeddings = torch.stack((angles.cos(), angles.sin()), dim=1).requires_grad_()
     labels = torch.tensor([0, 0, 1])
-    loss, stats = TripletMetricLoss(margin=0.5)(embeddings, labels, strategy="semi_hard")
+    loss, stats = TripletMetricLoss(margin=0.5)(
+        embeddings, labels, strategy="semi_hard"
+    )
     dap = float((embeddings[0] - embeddings[1]).square().sum().detach())
     dan = float((embeddings[1] - embeddings[2]).square().sum().detach())
     assert dap < dan < dap + 0.5
@@ -69,8 +75,12 @@ def test_random_mining_is_reproducible_and_never_selects_same_identity():
     embeddings = torch.eye(8, requires_grad=True)
     labels = torch.arange(8) // 2
     criterion = TripletMetricLoss(margin=0.3)
-    loss_a, stats_a = criterion(embeddings, labels, generator=torch.Generator().manual_seed(91))
-    loss_b, stats_b = criterion(embeddings, labels, generator=torch.Generator().manual_seed(91))
+    loss_a, stats_a = criterion(
+        embeddings, labels, generator=torch.Generator().manual_seed(91)
+    )
+    loss_b, stats_b = criterion(
+        embeddings, labels, generator=torch.Generator().manual_seed(91)
+    )
     # Every distinct pair has squared distance two, so both runs have a
     # deterministic analytical loss even though sampled indices may vary.
     assert stats_a == stats_b
@@ -79,7 +89,9 @@ def test_random_mining_is_reproducible_and_never_selects_same_identity():
     assert loss_a.item() == pytest.approx(0.3, abs=1e-6)
     clustered = torch.tensor([[1.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [-1.0, 0.0]])
     zero_loss, separated_stats = criterion(
-        clustered, torch.tensor([0, 0, 1, 1]), generator=torch.Generator().manual_seed(91)
+        clustered,
+        torch.tensor([0, 0, 1, 1]),
+        generator=torch.Generator().manual_seed(91),
     )
     assert zero_loss.item() == 0.0
     assert separated_stats["mean_negative_distance"] == 4.0
@@ -155,7 +167,12 @@ def test_iresnet34_normalization_fp32_head_and_backbone_gradient():
     torch.set_num_threads(min(previous_threads, 2))
     try:
         model = IResNet34(embedding_dim=256, dropout=0.0)
-        assert [len(model.layer1), len(model.layer2), len(model.layer3), len(model.layer4)] == [3, 4, 6, 3]
+        assert [
+            len(model.layer1),
+            len(model.layer2),
+            len(model.layer3),
+            len(model.layer4),
+        ] == [3, 4, 6, 3]
         assert model.fc.in_features == 512 * 7 * 7
         assert model.features.affine and not model.features.weight.requires_grad
         assert model.features.bias.requires_grad

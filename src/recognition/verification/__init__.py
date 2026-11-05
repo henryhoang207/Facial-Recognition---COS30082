@@ -1,6 +1,5 @@
-"""Embedding training and verification, including the shared Embedder pair API."""
+"""Shared verification for any model implementing Embedder.embed(face)."""
 
-from .config import VerificationConfig
-from .evaluator import PairEvaluator, score_metrics
+from .evaluator import PairEvaluator, VerificationConfig, score_metrics
 
 __all__ = ["PairEvaluator", "VerificationConfig", "score_metrics"]

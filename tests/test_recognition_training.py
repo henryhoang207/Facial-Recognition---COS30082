@@ -13,11 +13,11 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader
 
-from src.recognition.verification import notebook_utils, training
-from src.recognition.verification.config import ExperimentConfig
-from src.recognition.verification.data import prepare_manifests
-from src.recognition.verification.embedding_evaluation import subject_bootstrap_ci
-from src.recognition.verification.task import MetricLearningTask
+from src.recognition.identification import notebook_utils, training
+from src.recognition.identification.config import ExperimentConfig
+from src.recognition.identification.data import prepare_manifests
+from src.recognition.identification.embedding_evaluation import subject_bootstrap_ci
+from src.recognition.identification.task import MetricLearningTask
 from src.training import Trainer, TrainingConfig
 
 training_engine = import_module("src.training.trainer")
@@ -415,7 +415,7 @@ def test_run_with_no_optimizer_updates_is_never_accepted(experiment, monkeypatch
         }
 
     monkeypatch.setattr(
-        import_module("src.recognition.verification.task").TripletMetricLoss,
+        import_module("src.recognition.identification.task").TripletMetricLoss,
         "forward",
         empty_loss,
     )

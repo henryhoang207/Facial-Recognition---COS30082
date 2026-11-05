@@ -9,7 +9,7 @@ import pytest
 import torch
 from PIL import Image
 
-from src.recognition.verification.embedding_evaluation import (
+from src.recognition.identification.embedding_evaluation import (
     create_open_set_manifest,
     evaluate_identification,
     evaluate_probe,
@@ -66,7 +66,9 @@ def test_frozen_dev_threshold_is_not_recalibrated_on_test():
     dev_embeddings, dev_pairs = _pairs([0.9], [0.8])
     dev = verification_metrics(dev_embeddings, dev_pairs, target_fmr=0)
     embeddings, pairs = _pairs([0.7], [0.95])
-    test = verification_metrics(embeddings, pairs, target_fmr=0, threshold=dev["threshold"])
+    test = verification_metrics(
+        embeddings, pairs, target_fmr=0, threshold=dev["threshold"]
+    )
     assert test["threshold"] == dev["threshold"]
     assert test["threshold_source"] == "fixed"
     assert test["fmr"] == 1
@@ -88,7 +90,9 @@ def _image_frame(tmp_path):
     for index, color in enumerate(colors):
         path = f"{index}.jpg"
         Image.new("RGB", (20, 30), color).save(tmp_path / path)
-        rows.append({"rel_path": path, "identity_id": str(index // 2), "label": index // 2})
+        rows.append(
+            {"rel_path": path, "identity_id": str(index // 2), "label": index // 2}
+        )
     return pd.DataFrame(rows)
 
 
@@ -111,7 +115,13 @@ def test_extract_normalizes_preserves_modes_and_does_not_update_bn(tmp_path):
 def test_probe_uses_unique_images_and_rejects_nontraining_paths(tmp_path):
     frame = _image_frame(tmp_path)
     model = _TinyEncoder().train()
-    probe = pd.DataFrame({"anchor": ["0.jpg", "0.jpg"], "positive": ["1.jpg", "1.jpg"], "negative": ["2.jpg", "3.jpg"]})
+    probe = pd.DataFrame(
+        {
+            "anchor": ["0.jpg", "0.jpg"],
+            "positive": ["1.jpg", "1.jpg"],
+            "negative": ["2.jpg", "3.jpg"],
+        }
+    )
     result = evaluate_probe(model, frame, probe, tmp_path, "cpu", batch_size=2)
     assert result["ranking_rate"] == 1
     assert result["mean_gap"] > 0
@@ -127,13 +137,19 @@ def test_probe_uses_unique_images_and_rejects_nontraining_paths(tmp_path):
 
 def test_open_set_manifest_has_no_enrollment_or_duplicate_leakage():
     rows = [
-        {"rel_path": f"{identity}/{image}.jpg", "identity_id": str(identity), "sha256": f"{identity}_{image // 2}"}
+        {
+            "rel_path": f"{identity}/{image}.jpg",
+            "identity_id": str(identity),
+            "sha256": f"{identity}_{image // 2}",
+        }
         for identity in range(4)
         for image in range(8)
     ]
     frame = pd.DataFrame(rows)
     protocol = create_open_set_manifest(frame, seed=42, enrolled=2, enrollment=2)
-    assert protocol == create_open_set_manifest(frame, seed=42, enrolled=2, enrollment=2)
+    assert protocol == create_open_set_manifest(
+        frame, seed=42, enrolled=2, enrollment=2
+    )
     gallery = {path for person in protocol["gallery"] for path in person["paths"]}
     probes = {probe["rel_path"] for probe in protocol["probes"]}
     assert not gallery & probes
@@ -141,17 +157,29 @@ def test_open_set_manifest_has_no_enrollment_or_duplicate_leakage():
     assert not set(hashes.loc[list(gallery)]) & set(hashes.loc[list(probes)])
     assert len(protocol["gallery"]) == 2
     assert {probe["is_enrolled"] for probe in protocol["probes"]} == {False, True}
-    assert not ({probe["identity_id"] for probe in protocol["probes"] if not probe["is_enrolled"]} & {person["identity_id"] for person in protocol["gallery"]})
+    assert not (
+        {
+            probe["identity_id"]
+            for probe in protocol["probes"]
+            if not probe["is_enrolled"]
+        }
+        & {person["identity_id"] for person in protocol["gallery"]}
+    )
 
 
 def test_unknown_fpir_counts_searches_not_gallery_comparisons():
     embeddings = {
-        "gA": np.array([1, 0]), "gB": np.array([0, 1]),
-        "pA": np.array([1, 0]), "pB": np.array([0, 1]),
+        "gA": np.array([1, 0]),
+        "gB": np.array([0, 1]),
+        "pA": np.array([1, 0]),
+        "pB": np.array([0, 1]),
         "unknown": np.array([1, 1]),
     }
     protocol = {
-        "gallery": [{"identity_id": "A", "paths": ["gA"]}, {"identity_id": "B", "paths": ["gB"]}],
+        "gallery": [
+            {"identity_id": "A", "paths": ["gA"]},
+            {"identity_id": "B", "paths": ["gB"]},
+        ],
         "probes": [
             {"rel_path": "pA", "identity_id": "A", "is_enrolled": True},
             {"rel_path": "pB", "identity_id": "B", "is_enrolled": True},
@@ -164,15 +192,25 @@ def test_unknown_fpir_counts_searches_not_gallery_comparisons():
     assert result["unknown_probes"] == 1
     calibrated = evaluate_identification(embeddings, protocol=protocol, target_fpir=0)
     assert calibrated["fpir"] == 0
-    fixed = evaluate_identification(embeddings, protocol=protocol, threshold=calibrated["threshold"])
+    fixed = evaluate_identification(
+        embeddings, protocol=protocol, threshold=calibrated["threshold"]
+    )
     assert fixed["threshold"] == calibrated["threshold"]
     json.dumps(result, allow_nan=False)
 
 
 def test_identification_requires_correct_identity_and_threshold():
-    embeddings = {"gA": np.array([1, 0]), "gB": np.array([0, 1]), "wrongA": np.array([0, 1]), "unknown": np.array([-1, -1])}
+    embeddings = {
+        "gA": np.array([1, 0]),
+        "gB": np.array([0, 1]),
+        "wrongA": np.array([0, 1]),
+        "unknown": np.array([-1, -1]),
+    }
     protocol = {
-        "gallery": [{"identity_id": "A", "paths": ["gA"]}, {"identity_id": "B", "paths": ["gB"]}],
+        "gallery": [
+            {"identity_id": "A", "paths": ["gA"]},
+            {"identity_id": "B", "paths": ["gB"]},
+        ],
         "probes": [
             {"rel_path": "wrongA", "identity_id": "A", "is_enrolled": True},
             {"rel_path": "unknown", "identity_id": "C", "is_enrolled": False},
@@ -184,13 +222,29 @@ def test_identification_requires_correct_identity_and_threshold():
 
 
 def test_plot_artifacts_keep_frozen_threshold_and_full_history(tmp_path):
-    history = pd.DataFrame({"epoch": [1, 2, 3], "train_loss": [1.0, 0.8, 0.6], "dev_tar_at_fmr": [0.2, 0.4, 0.5], "dev_auc": [0.6, 0.7, 0.8], "stage": ["random", "random", "semihard"]})
+    history = pd.DataFrame(
+        {
+            "epoch": [1, 2, 3],
+            "train_loss": [1.0, 0.8, 0.6],
+            "dev_tar_at_fmr": [0.2, 0.4, 0.5],
+            "dev_auc": [0.6, 0.7, 0.8],
+            "stage": ["random", "random", "semihard"],
+        }
+    )
     graph = save_training_graph(history, tmp_path / "training.png")
     assert Path(graph).stat().st_size > 0
     embeddings, pairs = _pairs([0.9, 0.8], [0.2, 0.1])
-    artifacts = save_verification_graphs(embeddings, pairs, tmp_path / "verification", threshold=0.85)
+    artifacts = save_verification_graphs(
+        embeddings, pairs, tmp_path / "verification", threshold=0.85
+    )
     assert artifacts["metrics"]["threshold"] == 0.85
     assert Path(artifacts["roc"]).stat().st_size > 0
     assert Path(artifacts["score_distribution"]).stat().st_size > 0
-    sweep = pd.DataFrame({"family": ["B0", "B0", "B1", "B1"], "margin": [0.2, 0.3, 0.3, 0.4], "dev_tar_at_fmr": [0.5, 0.6, 0.7, 0.65]})
+    sweep = pd.DataFrame(
+        {
+            "family": ["B0", "B0", "B1", "B1"],
+            "margin": [0.2, 0.3, 0.3, 0.4],
+            "dev_tar_at_fmr": [0.5, 0.6, 0.7, 0.65],
+        }
+    )
     assert Path(plot_sweep(sweep, tmp_path / "sweep.png")).stat().st_size > 0

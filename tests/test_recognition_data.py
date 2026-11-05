@@ -1,21 +1,21 @@
 """Data integrity and reproducibility tests without model training."""
+
 from __future__ import annotations
 
-from collections import Counter
 import hashlib
-import json
 import os
-from pathlib import Path
 import random
 import shutil
+from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PIL import Image, UnidentifiedImageError
 import pytest
 import torch
+from PIL import Image, UnidentifiedImageError
 
-from src.recognition.verification import data
+from src.recognition.identification import data
 
 
 @pytest.fixture
@@ -36,8 +36,12 @@ def tiny_faces(tmp_path):
 
 
 def prepare(root, output, **overrides):
-    options = dict(dev_identities=2, genuine_per_identity=3,
-                   impostor_per_identity_pair=4, probe_per_identity=2)
+    options = dict(
+        dev_identities=2,
+        genuine_per_identity=3,
+        impostor_per_identity_pair=4,
+        probe_per_identity=2,
+    )
     options.update(overrides)
     return data.prepare_manifests(root, output, **options)
 
@@ -48,7 +52,11 @@ def test_shared_manifests_are_disjoint_deduplicated_and_reloadable(tiny_faces):
     frames = [prepared.train, prepared.dev, prepared.test]
     identity_sets = [set(frame.identity_id) for frame in frames]
     assert [len(ids) for ids in identity_sets] == [4, 2, 3]
-    assert not any(identity_sets[left] & identity_sets[right] for left in range(3) for right in range(left))
+    assert not any(
+        identity_sets[left] & identity_sets[right]
+        for left in range(3)
+        for right in range(left)
+    )
     combined = pd.concat(frames)
     assert len(combined) == 54
     assert combined.sha256.nunique() == 54
@@ -71,7 +79,10 @@ def test_shared_manifests_are_disjoint_deduplicated_and_reloadable(tiny_faces):
 def test_pairs_are_balanced_unique_and_triplets_use_train_only(tiny_faces):
     root, output = tiny_faces
     prepared = prepare(root, output)
-    for frame, pairs in ((prepared.dev, prepared.dev_pairs), (prepared.test, prepared.test_pairs)):
+    for frame, pairs in (
+        (prepared.dev, prepared.dev_pairs),
+        (prepared.test, prepared.test_pairs),
+    ):
         positives = pairs[pairs.is_same == 1]
         negatives = pairs[pairs.is_same == 0]
         assert set(positives.groupby("identity_a").size()) == {3}
@@ -79,10 +90,18 @@ def test_pairs_are_balanced_unique_and_triplets_use_train_only(tiny_faces):
         assert (positives.identity_a == positives.identity_b).all()
         assert (negatives.identity_a != negatives.identity_b).all()
         assert (pairs.path_a != pairs.path_b).all()
-        assert not pairs.apply(lambda row: tuple(sorted((row.path_a, row.path_b))), axis=1).duplicated().any()
+        assert (
+            not pairs.apply(lambda row: tuple(sorted((row.path_a, row.path_b))), axis=1)
+            .duplicated()
+            .any()
+        )
         identities = frame.set_index("rel_path").identity_id.to_dict()
         assert set(pairs.path_a) | set(pairs.path_b) <= set(identities)
-        assert all(identities[row.path_a] == row.identity_a and identities[row.path_b] == row.identity_b for row in pairs.itertuples())
+        assert all(
+            identities[row.path_a] == row.identity_a
+            and identities[row.path_b] == row.identity_b
+            for row in pairs.itertuples()
+        )
     identities = prepared.train.set_index("rel_path").identity_id.to_dict()
     assert len(prepared.probe_triplets) == 8
     assert not prepared.probe_triplets.duplicated().any()
@@ -109,7 +128,9 @@ def test_identity_name_overlap_is_rejected(tiny_faces):
         prepare(root, output)
 
 
-def test_saved_manifest_config_root_and_artifact_changes_are_rejected(tiny_faces, tmp_path):
+def test_saved_manifest_config_root_and_artifact_changes_are_rejected(
+    tiny_faces, tmp_path
+):
     root, output = tiny_faces
     prepare(root, output)
     with pytest.raises(ValueError, match="Stale"):
@@ -146,7 +167,9 @@ def test_hash_cache_reuses_only_matching_file_statistics(tiny_faces, monkeypatch
         pixels = np.array(image)
     pixels[3, 3, 0] = 240
     Image.fromarray(pixels).save(modified)
-    os.utime(modified, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000))
+    os.utime(
+        modified, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 1_000_000)
+    )
     with pytest.raises(ValueError, match="Stale"):
         prepare(root, output)
     changed = prepare(root, output, force=True)
@@ -162,7 +185,10 @@ def test_modified_hash_cache_is_not_trusted(tiny_faces):
         handle.write("\n")
     rebuilt = prepare(root, output, force=True)
     assert rebuilt.metadata["hash_cache"]["computed"] == 55
-    assert rebuilt.metadata["hash_cache"]["cache_invalidation_reason"] == "cache checksum mismatch"
+    assert (
+        rebuilt.metadata["hash_cache"]["cache_invalidation_reason"]
+        == "cache checksum mismatch"
+    )
 
 
 def test_pair_request_cannot_silently_become_unbalanced(tiny_faces):
@@ -175,8 +201,14 @@ def test_catalog_missing_image_is_rejected(tiny_faces):
     duckdb = pytest.importorskip("duckdb")
     root, output = tiny_faces
     with duckdb.connect(str(root / "vggface2.duckdb")) as connection:
-        connection.execute("CREATE TABLE vggface2_images(rel_path VARCHAR, identity_id VARCHAR, split VARCHAR, file_size_bytes BIGINT)")
-        connection.execute("INSERT INTO vggface2_images VALUES ('train/id000/missing.png','id000','train',20)")
+        connection.execute(
+            "CREATE TABLE vggface2_images(rel_path VARCHAR, identity_id VARCHAR, "
+            "split VARCHAR, file_size_bytes BIGINT)"
+        )
+        connection.execute(
+            "INSERT INTO vggface2_images VALUES "
+            "('train/id000/missing.png','id000','train',20)"
+        )
     with pytest.raises(FileNotFoundError, match="catalog references a missing"):
         prepare(root, output)
 
@@ -195,7 +227,9 @@ def test_rgb_square_crop_preserves_channels_and_black_padding(tmp_path):
     assert sample["image"].shape == (3, 112, 112)
     assert sample["image"].dtype == torch.float32
     assert sample["identity_id"] == "person" and sample["label"] == 0
-    torch.testing.assert_close(sample["image"][:, 56, 56], torch.tensor([208., 11., 39.]) / 127.5 - 1)
+    torch.testing.assert_close(
+        sample["image"][:, 56, 56], torch.tensor([208.0, 11.0, 39.0]) / 127.5 - 1
+    )
     assert torch.equal(sample["image"][:, 0, 56], torch.full((3,), -1.0))
 
 
@@ -239,7 +273,7 @@ def test_pk_batches_have_exact_counts_distinct_files_and_epoch_reproducibility()
     assert len(sampler) == 6
     epoch_zero = list(sampler)
     for batch in epoch_zero:
-        indices, seeds = zip(*batch)
+        indices, seeds = zip(*batch, strict=True)
         assert len(batch) == 6 and len(set(indices)) == 6
         assert set(Counter(labels[list(indices)]).values()) == {2}
         assert len(Counter(labels[list(indices)])) == 3
@@ -265,7 +299,9 @@ def test_pk_identity_draws_do_not_follow_image_frequency():
     assert max(counts.values()) / min(counts.values()) < 1.2
 
 
-@pytest.mark.parametrize("labels,P,K", [([0, 0], 2, 2), ([0, 0, 1], 2, 2), ([0, 0, 1, 1], 1, 2)])
+@pytest.mark.parametrize(
+    "labels,P,K", [([0, 0], 2, 2), ([0, 0, 1], 2, 2), ([0, 0, 1, 1], 1, 2)]
+)
 def test_pk_invalid_small_batches_fail_clearly(labels, P, K):
     with pytest.raises(ValueError):
         data.PKBatchSampler(labels, P=P, K=K)
@@ -275,26 +311,48 @@ def test_notebook_loader_uses_seeded_pk_tokens_without_worker_options(tiny_faces
     root, output = tiny_faces
     prepared = prepare(root, output)
     sampler = data.PKBatchSampler(prepared.train.label, P=2, K=2, batches_per_epoch=1)
-    loader = data.make_loader(prepared.train, root, train=True, batch_sampler=sampler, notebook=True)
+    loader = data.make_loader(
+        prepared.train, root, train=True, batch_sampler=sampler, notebook=True
+    )
     assert loader.num_workers == 0 and not loader.persistent_workers
     assert loader.prefetch_factor is None
     batch = next(iter(loader))
     expected = [loader.dataset[token] for token in next(iter(sampler))]
-    assert torch.equal(batch["image"], torch.stack([item["image"] for item in expected]))
+    assert torch.equal(
+        batch["image"], torch.stack([item["image"] for item in expected])
+    )
     assert batch["rel_path"] == [item["rel_path"] for item in expected]
 
 
 def test_spawn_workers_preserve_per_draw_augmentation_across_epochs(tiny_faces):
     root, output = tiny_faces
     prepared = prepare(root, output)
-    serial_sampler = data.PKBatchSampler(prepared.train.label, P=2, K=2, batches_per_epoch=2, seed=72)
-    spawn_sampler = data.PKBatchSampler(prepared.train.label, P=2, K=2, batches_per_epoch=2, seed=72)
-    serial = data.make_loader(prepared.train, root, train=True, batch_sampler=serial_sampler, num_workers=0, seed=72)
-    parallel = data.make_loader(prepared.train, root, train=True, batch_sampler=spawn_sampler, num_workers=2, seed=72)
+    serial_sampler = data.PKBatchSampler(
+        prepared.train.label, P=2, K=2, batches_per_epoch=2, seed=72
+    )
+    spawn_sampler = data.PKBatchSampler(
+        prepared.train.label, P=2, K=2, batches_per_epoch=2, seed=72
+    )
+    serial = data.make_loader(
+        prepared.train,
+        root,
+        train=True,
+        batch_sampler=serial_sampler,
+        num_workers=0,
+        seed=72,
+    )
+    parallel = data.make_loader(
+        prepared.train,
+        root,
+        train=True,
+        batch_sampler=spawn_sampler,
+        num_workers=2,
+        seed=72,
+    )
     for epoch in range(2):
         serial_sampler.set_epoch(epoch)
         spawn_sampler.set_epoch(epoch)
-        for first, second in zip(serial, parallel):
+        for first, second in zip(serial, parallel, strict=True):
             assert first["rel_path"] == second["rel_path"]
             assert torch.equal(first["label"], second["label"])
             assert torch.equal(first["image"], second["image"])

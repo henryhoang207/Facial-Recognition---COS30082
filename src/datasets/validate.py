@@ -104,11 +104,33 @@ class ManifestValidator:
                 "verification requires positive and negative pairs",
             )
             pairs_summary[split] = counts
-        return {
+        summary = {
             "classification_rows": len(classification),
             "classes": len(mapping),
             "pairs": pairs_summary,
         }
+        box_file = self.directory / "bbox_manifest.csv"
+        if box_file.exists():
+            box_rows = rows(box_file)
+            boxes = {row["path"]: row for row in box_rows}
+            require(len(boxes) == len(box_rows), "duplicate bbox path")
+            keys = ("x1", "y1", "x2", "y2")
+            for row in box_rows:
+                x1, y1, x2, y2 = (int(row[key]) for key in keys)
+                require(
+                    0 <= x1 < x2 <= int(row["width"])
+                    and 0 <= y1 < y2 <= int(row["height"]),
+                    f"bbox outside original image: {row['path']}",
+                )
+            for row in classification + verification:
+                require(row["path"] in boxes, "recognition image has no bbox")
+                require(
+                    [int(row[key]) for key in keys]
+                    == [int(boxes[row["path"]][key]) for key in keys],
+                    "recognition and verification bbox catalogs disagree",
+                )
+            summary["bbox_rows"] = len(box_rows)
+        return summary
 
     def liveness(self) -> dict:
         records = rows(self.directory / "celeba_liveness.csv")

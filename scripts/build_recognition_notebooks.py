@@ -38,12 +38,12 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from IPython.display import display, Image as DisplayImage
-from src.recognition.verification.config import ExperimentConfig
-from src.recognition.verification.data import prepare_manifests, FaceDataset, PKBatchSampler, make_loader
-from src.recognition.verification.models import IResNet34
-from src.recognition.verification.losses import TripletMetricLoss, ArcFaceHead
-from src.recognition.verification.training import configure_runtime, run_sweep, evaluate_selected
-from src.recognition.verification.notebook_utils import processing_preview, pilot_runtime, smoke_prepared, smoke_config
+from src.recognition.identification.config import ExperimentConfig
+from src.recognition.identification.data import prepare_manifests, FaceDataset, PKBatchSampler, make_loader
+from src.recognition.identification.models import IResNet34
+from src.recognition.identification.losses import TripletMetricLoss, ArcFaceHead
+from src.recognition.identification.training import configure_runtime, run_sweep, evaluate_selected
+from src.recognition.identification.notebook_utils import processing_preview, pilot_runtime, smoke_prepared, smoke_config
 
 print("Python:", sys.executable)
 print("PyTorch:", torch.__version__, "CUDA runtime:", torch.version.cuda)
@@ -108,7 +108,7 @@ print("Normalized range:", float(batch["image"].min()), float(batch["image"].max
 print("Images per identity:", torch.unique(batch["label"], return_counts=True)[1].tolist())
 del batch'''),
         markdown("## 3. Model and objective\n\n"
-                 "The reusable source is in `src/recognition/verification/models.py` and `losses.py`. "
+                 "The reusable source is in `src/recognition/identification/models.py` and `losses.py`. "
                  "The model uses iResNet stages [3,4,6,3], a 256-feature linear layer and final BatchNorm, "
                  "followed by explicit FP32 L2 normalization. Each margin run starts from the same encoder initialization for its seed. "
                  "`MetricLearningTask` uses the same `Trainer.fit` engine as A/C; the backbone and loss are unchanged. "

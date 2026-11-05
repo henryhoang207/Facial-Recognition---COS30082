@@ -5,6 +5,7 @@ Start with the [shared training guide](training-guide.md) to set up the environm
 | Guide | Contents |
 | --- | --- |
 | [Shared training guide](training-guide.md) | Setup, a runnable example, configuration, commands, resume, and integration with other tasks |
+| [Face bbox preparation](recognition-face-preparation.md) | Offline YuNet detection, review decisions, resumable scans, and bbox-aware recognition manifests |
 | [Recognition training](recognition-training.md) | Model A, Model C, embedding inference, classification evaluation, and shared verification |
 | [Dataset preparation](dataset-preparation.md) | Dataset mappings, manifests, split rules, and gallery review |
 | [Training design](training-design.md) | Module ownership, design decisions, and verification history |

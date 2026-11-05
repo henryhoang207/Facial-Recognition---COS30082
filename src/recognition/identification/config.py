@@ -1,4 +1,4 @@
-"""Settings for metric-learning experiments and shared pair verification."""
+"""Settings for metric-learning identification experiments."""
 
 from __future__ import annotations
 
@@ -6,19 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
-
-from src.training.config import Settings, TrainingConfig
-
-
-class VerificationConfig(Settings):
-    """Pair-based verification settings shared by classifiers and embedders."""
-
-    root: Path
-    pairs: Path
-    pairs_format: Literal["whitespace", "csv"]
-    target_fpr: float = Field(ge=0, lt=1)
-    selection_metric: Literal["cosine", "euclidean"]
+from src.training.config import TrainingConfig
 
 
 @dataclass

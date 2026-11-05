@@ -5,7 +5,7 @@ The original liveness implementation owns its loop, ACER metrics, and checkpoint
 ## Usage defines the interface
 
 ```python
-task = RecognitionTask(model).to(device)
+task = RecognitionTask(model, preprocess_config).to(device)
 optimizer = make_optimizer(task, config)
 trainer = Trainer(task, optimizer, config, new_run_dir(root, "recognition_a"))
 result = trainer.fit(train_loader, val_loader)
@@ -17,9 +17,9 @@ See the [shared training guide](training-guide.md) for a complete runnable examp
 
 ## Recognition package boundaries
 
-The ResNet-18 A/C implementation in `src/recognition/classification/` and the iResNet-34 B0/B1 notebook implementation in `src/recognition/verification/` use the same `Trainer.fit` engine and `TrainingTask` interface. B0/B1 retain `ExperimentConfig`, adapted through `trainer_config(seed)`, along with their P-by-K sampling, curriculum, margin sweeps, and identity-disjoint evaluation. `MetricLearningTask` owns the unchanged encoder, optional ArcFace head, objective, and reproducible mining state.
+The ResNet-18 A/C implementation in `src/recognition/classification/` and the iResNet-34 B0/B1 notebook implementation in `src/recognition/identification/` use the same `Trainer.fit` engine and `TrainingTask` interface. B0/B1 retain `ExperimentConfig`, adapted through `trainer_config(seed)`, along with their P-by-K sampling, curriculum, margin sweeps, and identity-disjoint evaluation. `MetricLearningTask` owns the unchanged encoder, optional ArcFace head, objective, and reproducible mining state.
 
-Both packages contain configuration, data, and model modules with distinct responsibilities. The shared `embed(face)` pair API remains in `verification/evaluator.py`, with its CLI in `verification/run.py`. The notebook-specific batched metrics are in `verification/embedding_evaluation.py`; `MetricEmbedder` adapts B0/B1 inference checkpoints for the common pair CLI. Data splits and evaluation thresholds remain specific to each protocol. See the [recognition package map](../src/recognition/README.md).
+Both packages contain configuration, data, and model modules with distinct responsibilities. The shared `embed(face)` pair API remains in `verification/evaluator.py`, with its CLI in `verification/run.py`. The notebook-specific batched metrics are in `identification/embedding_evaluation.py`; `MetricEmbedder` adapts B0/B1 inference checkpoints for the common pair CLI. Data splits and evaluation thresholds remain specific to each protocol. See the [recognition package map](../src/recognition/README.md).
 
 Both use the common version-1 checkpoint envelope. Training checkpoints contain task, optimizer, scaler, training configuration, metadata, RNG, and loader state; inference checkpoints contain the selected task snapshot and validation metrics. Optional policy state is saved alongside that envelope. Model-specific metadata and state-dict keys still differ, so the appropriate embedder loads each architecture. Legacy private-loop B0/B1 artifacts are retained but rejected for automatic resume; the notebook default is now `artifacts/main-cu130-shared-trainer/`.
 

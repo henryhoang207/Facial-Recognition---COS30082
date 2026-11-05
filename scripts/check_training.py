@@ -15,9 +15,17 @@ OWNED = [
     "src/datasets",
     "src/recognition/classification",
     "src/recognition/verification",
+    "src/recognition/identification",
+    "src/recognition/preprocessing",
     "tests/test_training.py",
     "tests/test_datasets.py",
     "tests/test_recognition.py",
+    "tests/test_metric_predictor.py",
+    "tests/test_recognition_data.py",
+    "tests/test_recognition_evaluation.py",
+    "tests/test_recognition_models_losses.py",
+    "tests/test_recognition_training.py",
+    "tests/test_face_preparation.py",
     "scripts/check_training.py",
     "scripts/check_docs.py",
 ]
@@ -60,7 +68,13 @@ def main() -> None:
         tests = [
             "tests/test_training.py",
             "tests/test_recognition.py",
+            "tests/test_metric_predictor.py",
+            "tests/test_recognition_data.py",
+            "tests/test_recognition_evaluation.py",
+            "tests/test_recognition_models_losses.py",
+            "tests/test_recognition_training.py",
             "tests/test_datasets.py",
+            "tests/test_face_preparation.py",
         ]
         if args.include_liveness:
             tests.append("tests/test_liveness.py")

@@ -25,6 +25,7 @@ def load_task(checkpoint: Path, device: torch.device):
     )
     task = RecognitionTask(model)
     task.load_state_dict(payload["task"])
+    task.on_epoch_start(payload["epoch"])
     task.to(device).eval()
     return task, payload
 

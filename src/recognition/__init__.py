@@ -1,1 +1,1 @@
-"""Face recognition workflows organized into classification and verification."""
+"""Face recognition embedders. Model A (classification): Gia Khanh. Model B (triplet loss) + verification eval: Duc Anh."""

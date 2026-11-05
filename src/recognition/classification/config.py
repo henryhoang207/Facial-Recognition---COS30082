@@ -11,13 +11,51 @@ from src.recognition.verification import VerificationConfig
 from src.training.config import Settings, TrainingConfig, override_config, read_yaml
 
 
+class MarginWarmupConfig(Settings):
+    enabled: bool = False
+    start_margin: float = Field(default=0.0, ge=0, lt=1.5707963267948966)
+    hold_epochs: int = Field(default=3, ge=0)
+    ramp_epochs: int = Field(default=5, gt=0)
+
+    def value(self, epoch: int, target: float) -> float:
+        if not self.enabled:
+            return target
+        fraction = min(1.0, max(0.0, (epoch - self.hold_epochs) / self.ramp_epochs))
+        return self.start_margin + (target - self.start_margin) * fraction
+
+
 class ModelConfig(Settings):
     variant: Literal["a", "c"]
     backbone: Literal["resnet18"]
     embedding_dim: int = Field(gt=0)
     initialization: Literal["random", "imagenet"]
     arcface_scale: float = Field(gt=0)
-    arcface_margin: float = Field(gt=0, lt=1.5707963267948966)
+    arcface_margin: float = Field(ge=0, lt=1.5707963267948966)
+    arcface_margin_warmup: MarginWarmupConfig = Field(
+        default_factory=MarginWarmupConfig
+    )
+    arcface_gradient: Literal["analytic", "straight_through"] = "analytic"
+    prototype_regularization_weight: float = Field(default=0.0, ge=0)
+    rectify_wrong_class_logits: bool = False
+    embedding_normalization: Literal["none", "batchnorm"] = "none"
+    embedding_bn_affine: bool = True
+    projection_bias: bool = True
+
+    @model_validator(mode="after")
+    def validate_objective(self) -> Self:
+        if (
+            self.arcface_margin_warmup.enabled
+            and self.arcface_margin_warmup.start_margin > self.arcface_margin
+        ):
+            raise ValueError("margin warmup start cannot exceed the target margin")
+        if self.variant == "a" and (
+            self.arcface_margin_warmup.enabled
+            or self.arcface_gradient != "analytic"
+            or self.prototype_regularization_weight
+            or self.rectify_wrong_class_logits
+        ):
+            raise ValueError("ArcFace objective controls require Model C")
+        return self
 
 
 class PreprocessConfig(Settings):
@@ -27,6 +65,10 @@ class PreprocessConfig(Settings):
     std: tuple[float, float, float]
     horizontal_flip: float = Field(ge=0, le=1)
     brightness: float = Field(ge=0, le=1)
+    contrast: float = Field(default=0, ge=0, le=1)
+    saturation: float = Field(default=0, ge=0, le=1)
+    rotation_degrees: float = Field(default=0, ge=0, le=45)
+    translate: float = Field(default=0, ge=0, le=0.25)
 
     @model_validator(mode="after")
     def positive_std(self) -> Self:
@@ -41,6 +83,9 @@ class DataConfig(Settings):
     val_dir: str
     test_dir: str
     manifest: Path | None
+    cache: Literal["auto", "none"] = "auto"
+    cache_max_fraction: float = Field(default=0.8, gt=0, lt=1)
+    cache_reserve_gib: float = Field(default=2.0, ge=0)
 
 
 class RecognitionConfig(Settings):
@@ -91,6 +136,8 @@ def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path 
         "warmup-epochs": ("training.warmup_epochs", int),
         "accumulation-steps": ("training.accumulation_steps", int),
         "eta-min": ("training.eta_min", float),
+        "cache": ("data.cache", str),
+        "amp-dtype": ("training.amp_dtype", str),
     }
     for flag, (_, value_type) in aliases.items():
         parser.add_argument(f"--{flag}", type=value_type, default=argparse.SUPPRESS)
@@ -134,6 +181,11 @@ def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path 
                     update={
                         "root": (base / config.verification.root).resolve(),
                         "pairs": (base / config.verification.pairs).resolve(),
+                        "bbox_manifest": (
+                            (base / config.verification.bbox_manifest).resolve()
+                            if config.verification.bbox_manifest is not None
+                            else None
+                        ),
                     }
                 )
                 if config.verification is not None
