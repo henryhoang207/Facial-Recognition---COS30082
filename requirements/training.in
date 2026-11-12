@@ -1,15 +1,3 @@
-# Keep the existing app dependencies in the isolated training environment.
---find-links https://download.pytorch.org/whl/cu130/torch/
---find-links https://download.pytorch.org/whl/cu130/torchvision/
+# One dependency declaration for main and the metric-learning notebooks.
+# Compile this input into training-cu130.lock.txt; do not duplicate exact pins.
 -r ../requirements.txt
-torch==2.10.0+cu130
-torchvision==0.25.0+cu130
-PyYAML==6.0.3
-pydantic==2.12.5
-black==26.1.0
-ruff==0.15.7
-pytest==9.0.2
-duckdb==1.4.4
-# OpenCV 5 removed CascadeClassifier, used by the existing liveness detector.
-opencv-python==4.13.0.92
-

@@ -14,6 +14,7 @@ from src.training import (
     StepResult,
     Trainer,
     TrainingConfig,
+    TrainingPolicy,
     TrainingTask,
     make_optimizer,
     make_scheduler,
@@ -176,6 +177,9 @@ def test_resume_restores_dropout_optimizer_and_shuffled_loader(tmp_path, device)
 def test_resume_recovers_best_weights_from_last_checkpoint_alone(tmp_path):
     initial, _ = run_regression(tmp_path / "initial", config(epochs=2))
     initial.best_checkpoint.unlink()
+    legacy = torch.load(initial.last_checkpoint, weights_only=True)
+    legacy.pop("best_row")
+    torch.save(legacy, initial.last_checkpoint)
     result, _ = run_regression(
         tmp_path / "continued", config(), resume=initial.last_checkpoint
     )
@@ -635,6 +639,249 @@ def test_scheduler_does_not_advance_when_amp_skips_all_updates(tmp_path):
     assert scheduler.last_epoch == 0
 
 
+def test_zero_signal_skips_adamw_decay_and_state_but_keeps_metrics(tmp_path):
+    class ZeroSignalTask(TrainingTask):
+        def __init__(self):
+            super().__init__()
+            self.parameter = nn.Parameter(torch.ones(()))
+
+        def step(self, batch):
+            return StepResult(
+                self.parameter * 0,
+                len(batch[0]),
+                {"inactive": MetricTotal(len(batch[0]), len(batch[0]))},
+                optimize=False,
+            )
+
+    cfg = config(epochs=1, lr=0.1, weight_decay=0.5, accumulation_steps=2)
+    task = ZeroSignalTask()
+    optimizer = make_optimizer(task, cfg)
+    loader = DataLoader(TensorDataset(torch.ones(5)), batch_size=2)
+    result = Trainer(task, optimizer, cfg, tmp_path / "zero-signal").fit(loader, loader)
+    assert task.parameter.item() == 1
+    assert optimizer.state_dict()["state"] == {}
+    assert result.history[0]["train_optimizer_steps"] == 0
+    assert result.history[0]["train_inactive"] == 1
+    assert result.history[0]["train_loss"] == 0
+
+
+def test_zero_signal_batches_do_not_dilute_accumulated_gradients(tmp_path):
+    class SelectiveTask(ScalarRegressionTask):
+        def step(self, batch):
+            images, targets, active = batch
+            result = super().step((images, targets))
+            return StepResult(result.loss, result.weight, optimize=bool(active.item()))
+
+    cfg = config(
+        epochs=1, optimizer="sgd", lr=0.1, weight_decay=0, accumulation_steps=2
+    )
+    loader = DataLoader(
+        TensorDataset(
+            torch.tensor([1.0, 100.0, 3.0]),
+            torch.ones(3),
+            torch.tensor([True, False, True]),
+        ),
+        batch_size=1,
+    )
+    task = SelectiveTask()
+    result = Trainer(task, make_optimizer(task, cfg), cfg, tmp_path / "selective").fit(
+        loader, loader
+    )
+    assert task.weight.item() == pytest.approx(0.4)
+    assert result.history[0]["train_optimizer_steps"] == 1
+
+
+def test_whole_validation_evaluator_needs_no_batch_validation_step(tmp_path):
+    class TrainOnlyTask(FixedLossTask):
+        def step(self, batch):
+            assert self.training
+            return super().step(batch)
+
+    cfg = config(epochs=2, monitor="val_auc", mode="max")
+    task = TrainOnlyTask()
+    loader = DataLoader(TensorDataset(torch.ones(4)), batch_size=2)
+
+    def evaluate(task, device):
+        assert not task.training and not torch.is_grad_enabled()
+        return {"val_auc": 0.75}
+
+    result = Trainer(
+        task,
+        make_optimizer(task, cfg),
+        cfg,
+        tmp_path / "whole-validation",
+        evaluator=evaluate,
+    ).fit(loader)
+    assert all(row["val_auc"] == 0.75 for row in result.history)
+    assert all("val_loss" not in row for row in result.history)
+    no_eval = TrainOnlyTask()
+    with pytest.raises(ValueError, match="evaluator is required"):
+        Trainer(no_eval, make_optimizer(no_eval, cfg), cfg, tmp_path / "no-eval").fit(
+            loader
+        )
+
+
+class StatefulTask(TrainingTask):
+    def __init__(self):
+        super().__init__()
+        self.parameter = nn.Parameter(torch.ones(()))
+        self.generator = torch.Generator().manual_seed(1729)
+        self.seen = 0
+
+    def get_extra_state(self):
+        return {"seen": self.seen, "generator": self.generator.get_state()}
+
+    def set_extra_state(self, state):
+        self.seen = state["seen"]
+        self.generator.set_state(state["generator"])
+
+    def step(self, batch):
+        assert self.training
+        self.seen += 1
+        target = torch.rand((), generator=self.generator)
+        return StepResult((self.parameter - target).square(), len(batch[0]))
+
+
+class StatefulPolicy(TrainingPolicy):
+    def __init__(self):
+        self.completed = 0
+        self.batch_calls = 0
+
+    def on_epoch_start(self, trainer, epoch, loader):
+        assert trainer.current_epoch == epoch
+        assert self.completed == epoch - 1
+
+    def on_batch_start(self, trainer, epoch, batch_index, batches):
+        assert batches == 2
+        self.batch_calls += 1
+        for group in trainer.optimizer.param_groups:
+            group["lr"] = 0.02 / (epoch + batch_index)
+
+    def on_epoch_end(self, trainer, epoch, row):
+        assert "val_auc" in row
+        self.completed = epoch
+        row["strategy"] = "random" if epoch == 1 else "semi_hard"
+
+    def should_stop(self, trainer, epoch):
+        return self.completed >= 3
+
+    def state_dict(self):
+        return {"completed": self.completed, "batch_calls": self.batch_calls}
+
+    def load_state_dict(self, state):
+        self.completed = state["completed"]
+        self.batch_calls = state["batch_calls"]
+
+
+def test_policy_and_task_extra_state_resume_and_finalize_without_extra_epoch(tmp_path):
+    cfg = config(epochs=4, monitor="val_auc", mode="max", patience=1)
+
+    def run(path, *, resume=None, interrupt=False):
+        task = StatefulTask()
+        policy = StatefulPolicy()
+
+        def evaluate(task, device):
+            if interrupt and policy.completed == 2:
+                raise RuntimeError("policy interruption")
+            return {"val_auc": 0.75}
+
+        trainer = Trainer(
+            task,
+            make_optimizer(task, cfg),
+            cfg,
+            path,
+            evaluator=evaluate,
+            policy=policy,
+        )
+        loader = DataLoader(
+            TensorDataset(torch.ones(4)),
+            batch_size=2,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(98),
+        )
+        return trainer.fit(loader, resume=resume), task, policy
+
+    full, full_task, full_policy = run(tmp_path / "policy-full")
+    with pytest.raises(RuntimeError, match="policy interruption"):
+        run(tmp_path / "policy-interrupted", interrupt=True)
+    resumed, resumed_task, resumed_policy = run(
+        tmp_path / "policy-resumed", resume=tmp_path / "policy-interrupted/last.pt"
+    )
+    assert resumed.history == full.history
+    assert len(full.history) == 3
+    assert full_policy.batch_calls == resumed_policy.batch_calls == 6
+    assert full_task.seen == resumed_task.seen == 6
+    torch.testing.assert_close(
+        full_task.parameter, resumed_task.parameter, rtol=0, atol=0
+    )
+    best = torch.load(full.best_checkpoint, weights_only=True)
+    last = torch.load(full.last_checkpoint, weights_only=True)
+    assert best["task"]["_extra_state"]["seen"] == 2
+    assert last["task"]["_extra_state"]["seen"] == 6
+    assert last["policy_state"] == full_policy.state_dict()
+    assert best["val_metrics"]["strategy"] == "random"
+    finalized, finalized_task, finalized_policy = run(
+        tmp_path / "policy-finalized", resume=full.last_checkpoint
+    )
+    assert finalized.history == full.history
+    assert finalized_task.seen == 6
+    assert finalized_policy.batch_calls == 6
+    assert finalized.best_checkpoint.exists() and finalized.last_checkpoint.exists()
+    assert (finalized.run_dir / "history.csv").exists()
+    task = StatefulTask()
+    with pytest.raises(ValueError, match="training policy type differs"):
+        Trainer(task, make_optimizer(task, cfg), cfg, tmp_path / "wrong-policy").fit(
+            DataLoader(TensorDataset(torch.ones(2))),
+            DataLoader(TensorDataset(torch.ones(2))),
+            resume=full.last_checkpoint,
+        )
+
+
+def test_trainer_advances_epoch_aware_batch_sampler(tmp_path):
+    class EpochBatchSampler(torch.utils.data.BatchSampler):
+        def __init__(self, dataset):
+            super().__init__(torch.utils.data.SequentialSampler(dataset), 2, False)
+            self.epochs = []
+
+        def set_epoch(self, epoch):
+            self.epochs.append(epoch)
+
+    dataset = TensorDataset(torch.ones(4))
+    sampler = EpochBatchSampler(dataset)
+    loader = DataLoader(dataset, batch_sampler=sampler)
+    cfg = config(epochs=3)
+    task = FixedLossTask()
+    Trainer(task, make_optimizer(task, cfg), cfg, tmp_path / "epoch-sampler").fit(
+        loader, loader
+    )
+    assert sampler.epochs == [0, 1, 2]
+
+
+def test_checkpoint_writes_through_file_stream_and_round_trips(tmp_path, monkeypatch):
+    directory = tmp_path / "training_session"
+    original_save = torch.save
+    writes = []
+
+    def save(payload, stream, *args, **kwargs):
+        assert hasattr(stream, "write") and not stream.closed
+        writes.append(stream.name)
+        return original_save(payload, stream, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "save", save)
+    cfg = config(epochs=1)
+    task = FixedLossTask()
+    loader = DataLoader(TensorDataset(torch.ones(2)), batch_size=2)
+    result = Trainer(task, make_optimizer(task, cfg), cfg, directory).fit(
+        loader, loader
+    )
+    with result.last_checkpoint.open("rb") as stream:
+        checkpoint = torch.load(stream, map_location="cpu", weights_only=True)
+    assert checkpoint["epoch"] == 1
+    assert checkpoint["checkpoint_kind"] == "training"
+    assert result.best_checkpoint.is_file()
+    assert len(writes) == 2
+
+
 def selection_config(**updates):
     return config(
         epochs=12,
@@ -760,3 +1007,45 @@ def test_multi_metric_resume_keeps_selection_and_stopping_state(tmp_path):
 def test_duplicate_checkpoint_metrics_are_rejected():
     with pytest.raises(ValueError, match="metric names must be unique"):
         config(checkpoint_tiebreakers=[{"metric": "val_loss", "mode": "min"}])
+
+
+def test_policy_preserves_task_schedule_tiebreakers_and_stopping_warmup(tmp_path):
+    class ScheduledTask(FixedLossTask):
+        def __init__(self):
+            super().__init__()
+            self.scheduled_epochs = []
+
+        def on_epoch_start(self, epoch):
+            self.scheduled_epochs.append(epoch)
+            return {"scheduled": float(epoch)}
+
+        def early_stopping_ready(self, epoch):
+            return epoch >= 3
+
+    class AnnotationPolicy(TrainingPolicy):
+        def on_epoch_end(self, trainer, epoch, row):
+            row["annotation"] = "scheduled"
+
+    cfg = config(
+        epochs=8,
+        patience=2,
+        checkpoint_tiebreakers=[{"metric": "scheduled", "mode": "max"}],
+        early_stopping_monitor={"metric": "val_loss", "mode": "min"},
+    )
+    task = ScheduledTask()
+    loader = DataLoader(TensorDataset(torch.ones(2)), batch_size=2)
+    result = Trainer(
+        task,
+        make_optimizer(task, cfg),
+        cfg,
+        tmp_path / "scheduled-policy",
+        policy=AnnotationPolicy(),
+    ).fit(loader, loader)
+    assert task.scheduled_epochs == [1, 2, 3, 4]
+    assert result.best_epoch == 4
+    assert all(row["annotation"] == "scheduled" for row in result.history)
+    best = torch.load(result.best_checkpoint, weights_only=True)
+    last = torch.load(result.last_checkpoint, weights_only=True)
+    assert best["selection_metrics"] == {"val_loss": 1.0, "scheduled": 4.0}
+    assert last["stopping_best"] == {"val_loss": 1.0}
+    assert last["bad_epochs"] == 2

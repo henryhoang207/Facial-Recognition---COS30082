@@ -10,7 +10,7 @@ from .config import (
     seed_worker,
 )
 from .task import MetricTotal, StepResult, TrainingTask
-from .trainer import FitResult, Trainer, new_run_dir
+from .trainer import FitResult, Trainer, TrainingPolicy, new_run_dir
 
 __all__ = [
     "FitResult",
@@ -20,6 +20,7 @@ __all__ = [
     "StepResult",
     "Trainer",
     "TrainingConfig",
+    "TrainingPolicy",
     "TrainingTask",
     "make_optimizer",
     "make_scheduler",
