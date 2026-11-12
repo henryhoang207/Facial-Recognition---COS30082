@@ -17,7 +17,7 @@ See the [shared training guide](training-guide.md) for a complete runnable examp
 
 ## Recognition package boundaries
 
-The ResNet-18 A/C implementation in `src/recognition/classification/` and the iResNet-34 B0/B1 notebook implementation in `src/recognition/identification/` use the same `Trainer.fit` engine and `TrainingTask` interface. B0/B1 retain `ExperimentConfig`, adapted through `trainer_config(seed)`, along with their P-by-K sampling, curriculum, and identity-disjoint evaluation. The notebooks launch one fixed-margin run at seed 42, with 20 CPU loading workers, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. `MetricLearningTask` owns the unchanged encoder, optional ArcFace head, objective, and reproducible mining state.
+The ResNet-18 Model A implementation in `src/recognition/classification/` and the iResNet-34 B0/B1 notebook implementation in `src/recognition/identification/` use the same `Trainer.fit` engine and `TrainingTask` interface. B0/B1 retain `ExperimentConfig`, adapted through `trainer_config(seed)`, along with their P-by-K sampling, curriculum, and identity-disjoint evaluation. The notebooks launch one fixed-margin run at seed 42, with 20 CPU loading workers, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. `MetricLearningTask` owns the unchanged encoder, optional ArcFace head, objective, and reproducible mining state.
 
 Both packages contain configuration, data, and model modules with distinct responsibilities. The shared `embed(face)` pair API remains in `verification/evaluator.py`, with its CLI in `verification/run.py`. The notebook-specific batched metrics are in `identification/embedding_evaluation.py`; `MetricEmbedder` adapts B0/B1 inference checkpoints for the common pair CLI. Data splits and evaluation thresholds remain specific to each protocol. See the [recognition package map](../src/recognition/README.md).
 
@@ -27,7 +27,7 @@ Both use the common version-1 checkpoint envelope. Training checkpoints contain 
 
 One design subclassed `Trainer` and required a `compute_step` hook. The selected design composes `Trainer` with `TrainingTask(nn.Module)` and `step(batch) -> StepResult`.
 
-Both approaches respected task ownership. An independent review selected composition because it puts all trainable state, including ArcFace weights and trainable loss components, inside one module. Contributors implement the objective without inheriting methods that could override AMP or checkpoint handling. The public interface consists of the task step, `fit`, an optional evaluator callback, and optional `TrainingPolicy` hooks for experiment rules.
+Both approaches respected task ownership. An independent review selected composition because it puts all trainable state, including trainable loss components, inside one module. Contributors implement the objective without inheriting methods that could override AMP or checkpoint handling. The public interface consists of the task step, `fit`, an optional evaluator callback, and optional `TrainingPolicy` hooks for experiment rules.
 
 The selected design also provides explicit encoder access for recognition evaluation and inference. `RecognitionTask` has `model.encoder`; generic tasks do not need an encoder or classification logits. A universal `Trainer(model, criterion)` interface was rejected because triplet mining and multi-output liveness models do not share one forward/loss signature.
 
@@ -40,13 +40,13 @@ The selected design also provides explicit encoder access for recognition evalua
 - Dataset adapters own their input and batch formats. Recognition uses `src.common.face_crop.crop_face`.
 - The pair evaluator owns the verification and threshold protocol, using embeddings rather than classifier identities.
 
-Configuration is validated at each entry point: Pydantic YAML/CLI settings for A/C and a retained dataclass plus shared-config adapter for B0/B1. Loss and metrics are checked before a checkpoint advances. Resume restores completed-epoch state and rejects incompatible configuration or metadata. Test evaluation is separate from validation-based model selection.
+Configuration is validated at each entry point: Pydantic YAML/CLI settings for Model A and a retained dataclass plus shared-config adapter for B0/B1. Loss and metrics are checked before a checkpoint advances. Resume restores completed-epoch state and rejects incompatible configuration or metadata. Test evaluation is separate from validation-based model selection.
 
 `StepResult.optimize=False` records a valid no-signal batch without backward or an optimizer update. B0 uses this when no selected triplet contributes a positive hinge. This preserves the mining protocol and avoids weight-decay-only updates. AMP overflow skips and actual successful updates remain trainer responsibilities.
 
 ## Optimizer groups and accumulation
 
-Optimizer groups specify task-relative module names, an absolute LR or scale, and an optional weight decay. Groups must have disjoint parameters. Remaining trainable parameters enter `default`. The trainer contains no recognition architecture names. A and C define backbone and head groups in their YAML, while other tasks define their own paths.
+Optimizer groups specify task-relative module names, an absolute LR or scale, and an optional weight decay. Groups must have disjoint parameters. Remaining trainable parameters enter `default`. The trainer contains no recognition architecture names. Model A defines backbone and head groups in YAML, while other tasks define their own paths.
 
 Gradient accumulation combines microbatch gradients according to their weights. It normalizes the result at the update boundary, then unscales, clips, and updates. The final incomplete window is flushed before validation and checkpointing. Linear warmup and cosine use PyTorch schedulers, with both scheduler and optimizer-group states saved for resume.
 
@@ -54,7 +54,7 @@ Default early stopping waits for actual warmup progress. If AMP skips every opti
 
 ## Verification history
 
-`scripts/check_training.py` checks formatting, lint, training behavior, resume, weighted metrics, AMP, A/C inference, and threshold calibration. Existing liveness tests have also been run without migrating its implementation.
+`scripts/check_training.py` checks formatting, lint, training behavior, resume, weighted metrics, AMP, Model A inference, and threshold calibration. Existing liveness tests have also been run without migrating its implementation.
 
 The following regressions were reproduced before their fixes and passed afterward:
 

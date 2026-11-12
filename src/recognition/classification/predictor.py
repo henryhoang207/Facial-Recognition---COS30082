@@ -18,14 +18,13 @@ def load_task(checkpoint: Path, device: torch.device):
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     metadata = payload["metadata"]
     if metadata.get("task") != "recognition_classification":
-        raise ValueError("checkpoint is not a Model A/C training artifact")
-    config = ModelConfig.model_validate(metadata["model_config"])
+        raise ValueError("checkpoint is not a Model A training artifact")
+    config = ModelConfig.from_checkpoint(metadata["model_config"])
     model = ClassificationModel(
         config, len(metadata["class_to_idx"]), load_initial_weights=False
     )
     task = RecognitionTask(model)
     task.load_state_dict(payload["task"])
-    task.on_epoch_start(payload["epoch"])
     task.to(device).eval()
     return task, payload
 

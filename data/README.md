@@ -6,12 +6,12 @@ The downloaded local datasets are `VGGFace2/`, `CelebA_Spoof_processed/`, `DFEW_
 Their existing DuckDB catalogs are read-only inputs. Project CSV manifests and class/person mappings are generated in `data/manifests/`:
 
 ```bash
-python -m src.datasets.prepare --config configs/datasets.yaml
-python -m src.datasets.validate --config configs/datasets.yaml
+python -m src.datasets.prepare --config configs/datasets.yaml --only recognition --set output_dir=../data/manifests/vggface2_full
+python -m src.datasets.validate --config configs/datasets.yaml --only recognition --set output_dir=../data/manifests/vggface2_full
 ```
 
 See [dataset mapping and split protocols](../docs/dataset-preparation.md).
-Recognition A/C configs use the VGGFace2 manifests. `faces/` contains team gallery/demo photos and is excluded from training.
+The Model A configuration uses the VGGFace2 manifests. `faces/` contains team gallery/demo photos and is excluded from training.
 DFEW manifests preserve video clips and official test folds. CelebA manifests match the existing liveness loader, where `live=1` and `spoof=0`.
 Do not commit images, databases, generated manifests or gallery photos.
 

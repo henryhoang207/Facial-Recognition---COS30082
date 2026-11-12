@@ -1,15 +1,15 @@
 # Generate face bboxes and recognition manifests
 
-This command runs YuNet on the local VGGFace2 subset and publishes a separate recognition protocol with face bboxes. It does not download the full VGGFace2 image dataset, edit source images, or replace the original manifests.
+This optional command runs YuNet on input catalogs and publishes a separate recognition protocol with face bboxes. Use it for loose source images that need crop coordinates. The current Model A configuration uses the pre-cropped VGGFace2 export directly.
 
-The pretrained detector is a preprocessing tool. Recognition A and C retain their configured random initialization. Generated boxes are automatic detections, not human-verified identity annotations.
+The pretrained detector is a preprocessing tool. Model A uses random initialization by default. Generated boxes are automatic detections, not human-verified identity annotations.
 
 ## Run detection
 
-Activate the training environment and run from the repository root:
+Activate the training environment and run from the repository root. Point `root`, `classification`, and `verification` at the source dataset and catalogs you want to scan. The supplied YAML points at the full local VGGFace2 export, so start with a scan limit to inspect the results:
 
 ```bash
-python -m src.recognition.preprocessing.prepare --config configs/recognition/face-preparation.yaml
+python -m src.recognition.preprocessing.prepare --config configs/recognition/face-preparation.yaml --scan-limit 128
 ```
 
 The first run downloads the 232,589-byte [YuNet 2023mar model](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet), which is compatible with the locked OpenCV 4 runtime. Its SHA-256 is pinned in YAML and verified before use. The model is licensed under the upstream MIT license. No new Python dependency is required.
@@ -93,7 +93,7 @@ python -m src.datasets.validate --config configs/datasets.yaml --only recognitio
 
 Generated files and detector weights are ignored by Git. Include the selected generation and model checksum in the group's Google Drive backup.
 
-The selected local generation is `protocol_bf22763a4f78`. The full scan covered 197,683 catalog images, accepted 183,851 automatic boxes, and retained 13,832 images for review. Classification keeps all 480 identities with 131,280 train, 16,496 validation, and 16,422 test images. Verification keeps 19,653 images across the two unseen-identity pools, with 6,000 pairs and 30 identities per split. Original base manifests and image files remain available.
+The historical generation `protocol_bf22763a4f78` describes the earlier loose-crop subset. Its scan covered 197,683 catalog images and accepted 183,851 automatic boxes. The archived manifests record the old image layout. Use the current [VGGFace2 export](dataset-preparation.md#use-the-current-vggface2-export) for Model A.
 
 ## Review and override ambiguous images
 
@@ -117,7 +117,7 @@ This reuses detector results and publishes a new protocol generation. Invalid, d
 
 ## Use the selected protocol for training
 
-Recognition A/C configurations select a generation through `data.manifest`, `verification.pairs`, and `verification.bbox_manifest`. `data.root` and `verification.root` continue to point at the original VGGFace2 image directory. Update all three manifest paths together when changing generations.
+To train Model A on a bbox protocol, select the generation through `data.manifest`, `verification.pairs`, and `verification.bbox_manifest`. `data.root` and `verification.root` continue to point at the original VGGFace2 image directory. Update all three manifest paths together when changing generations.
 
 Classification reads bboxes from its CSV. Verification requires bbox coverage for every image used in its pairs and applies the same shared square-crop function. GPU caches store those resulting crops. The verification catalog checksum is recorded in calibration reports and training metadata; changing bboxes invalidates an old calibration or incompatible resume.
 

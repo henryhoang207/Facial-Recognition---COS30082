@@ -119,7 +119,7 @@ del batch, images'''),
                  "The reusable source is in `src/recognition/identification/models.py` and `losses.py`. "
                  "The model uses iResNet stages [3,4,6,3], a 256-feature linear layer and final BatchNorm, "
                  "followed by explicit FP32 L2 normalization. Each experiment starts from a fresh encoder initialized at seed 42. "
-                 "`MetricLearningTask` uses the same `Trainer.fit` engine as A/C; the backbone and loss are unchanged. "
+                 "`MetricLearningTask` uses the same `Trainer.fit` engine as Model A; the backbone and loss are unchanged. "
                  "The notebook retains `ExperimentConfig`, with shared engine settings adapted by `trainer_config(seed)`."),
         code('''model = IResNet34(embedding_dim=256)
 print(model)

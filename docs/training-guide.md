@@ -2,7 +2,7 @@
 
 Use this guide to install the training environment, define a YAML configuration, run a training task, and resume it. All commands run from the repository root.
 
-The shared API is in `src/training/`. Recognition A and C use it through their command-line entry point in `src/recognition/classification/`. B0/B1 use the same `Trainer.fit`, `TrainingTask`, and checkpoint schema through their notebook workflow in `src/recognition/identification/`. They retain their own `ExperimentConfig`, sampling, and evaluation protocol. Other task owners supply a task and data loaders; the existing liveness command retains its own loop. See the [recognition package map](../src/recognition/README.md) and [notebook guide](../notebooks/metrics-learn/RECOGNITION.md).
+The shared API is in `src/training/`. Model A uses it through the command-line entry point in `src/recognition/classification/`. B0/B1 use the same `Trainer.fit`, `TrainingTask`, and checkpoint schema through their notebook workflow in `src/recognition/identification/`. They retain their own `ExperimentConfig`, sampling, and evaluation protocol. Other task owners supply a task and data loaders. The existing liveness command retains its own loop. See the [recognition package map](../src/recognition/README.md) and [notebook guide](../notebooks/metrics-learn/RECOGNITION.md).
 
 ## Set up the environment
 
@@ -86,11 +86,10 @@ Start from the configuration for that task:
 | --- | --- | --- |
 | Shared synthetic example | `configs/training/example.yaml` | `python -m examples.shared_training` |
 | Recognition A, cross-entropy | `configs/recognition/model_a.yaml` | `python -m src.recognition.classification.train` |
-| Recognition C, ArcFace | `configs/recognition/model_c.yaml` | `python -m src.recognition.classification.train` |
 
 Recognition configurations have `model`, `preprocess`, `data`, `training`, `verification`, `output_dir`, and `evaluator` sections. The shared trainer consumes `TrainingConfig`; the task's entry point owns the other sections. A configuration for one entry point is not automatically valid for another.
 
-Recognition A and C apply batch augmentation on the model device and can cache unaugmented crops in VRAM. See [GPU augmentation and VRAM caching](recognition-training.md#configure-gpu-augmentation-and-vram-caching) for configuration, automatic fallback, and commands. Other tasks define their own preprocessing.
+Model A applies batch augmentation on the model device and can cache unaugmented crops in VRAM. See [GPU augmentation and VRAM caching](recognition-training.md#configure-gpu-augmentation-and-vram-caching) for configuration, automatic fallback, and commands. Other tasks define their own preprocessing.
 
 For a new task, keep all shared fields from the example's `training` section. Replace its synthetic dataset settings and `RegressionTask` with that task's data loader and objective. Use `parameter_groups: []` until you define module groups for the new task.
 
@@ -102,17 +101,17 @@ data:
   train_dir: train_data
   val_dir: val_data
   test_dir: test_data
-  manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/vggface2_classification.csv
+  manifest: ../../data/manifests/vggface2_full/vggface2_classification.csv
 verification:
   root: ../../data/VGGFace2
-  pairs: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/verification_pairs_val.csv
-  bbox_manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/bbox_manifest.csv
+  pairs: ../../data/manifests/vggface2_full/verification_pairs_val.csv
+  bbox_manifest: null
   pairs_format: csv
   target_fpr: 0.01
   selection_metric: cosine
 ```
 
-Keep the complete model and training sections from the supplied A or C YAML. With a manifest configured, `train_dir`, `val_dir`, and `test_dir` are unused folder-adapter settings.
+Keep the complete model and training sections from the supplied Model A YAML. With a manifest configured, `train_dir`, `val_dir`, and `test_dir` are unused folder-adapter settings.
 
 Relative data and output paths are resolved from the YAML file's directory, including path values supplied through recognition CLI overrides. `--config` and `--resume` are resolved from the command's working directory. Use absolute paths when you move data to another machine or Drive mount. Moving a YAML file changes the base of its relative paths.
 
@@ -145,7 +144,7 @@ Best-checkpoint selection remains active during warmup.
 
 ## Select checkpoints with multiple metrics
 
-`monitor`, `mode`, and `min_delta` define the first comparison. `checkpoint_tiebreakers` adds ordered comparisons; an empty list preserves single-metric selection. Recognition A/C use:
+`monitor`, `mode`, and `min_delta` define the first comparison. `checkpoint_tiebreakers` adds ordered comparisons; an empty list preserves single-metric selection. Model A uses these settings:
 
 ```yaml
 training:
@@ -181,7 +180,7 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 
 ## Configure mixed precision
 
-CUDA mixed precision uses `amp: true` with `amp_dtype: bf16` or `fp16`. Recognition A and C default to BF16. The shared schema defaults to FP16 when older configurations omit `amp_dtype`. CPU runs and `amp: false` use FP32. BF16 requires native support on the selected CUDA device; an unsupported device raises an error instead of changing precision.
+CUDA mixed precision uses `amp: true` with `amp_dtype: bf16` or `fp16`. Model A defaults to BF16. The shared schema defaults to FP16 when older configurations omit `amp_dtype`. CPU runs and `amp: false` use FP32. BF16 requires native support on the selected CUDA device; an unsupported device raises an error instead of changing precision.
 
 Autocast selects lower precision for eligible operations while model weights and optimizer state remain FP32. BF16 does not enable gradient scaling. FP16 uses GradScaler, whose starting scale is `amp_init_scale`. `environment.json` records the effective `precision` and whether `gradient_scaling` is enabled. See [PyTorch AMP](https://docs.pytorch.org/docs/stable/amp.html) for operation-specific behavior.
 
@@ -247,12 +246,6 @@ Run the supplied baseline:
 python -m src.recognition.classification.train --config configs/recognition/model_a.yaml
 ```
 
-Run Model C:
-
-```bash
-python -m src.recognition.classification.train --config configs/recognition/model_c.yaml
-```
-
 Override hyperparameters through arguments:
 
 ```bash
@@ -262,7 +255,7 @@ python -m src.recognition.classification.train --config configs/recognition/mode
 Select SGD:
 
 ```bash
-python -m src.recognition.classification.train --config configs/recognition/model_c.yaml --optimizer sgd --set training.sgd_momentum=0.9 --set training.sgd_nesterov=true
+python -m src.recognition.classification.train --config configs/recognition/model_a.yaml --optimizer sgd --set training.sgd_momentum=0.9 --set training.sgd_nesterov=true
 ```
 
 Pass list values as quoted YAML:
@@ -289,7 +282,7 @@ Each recognition invocation creates a unique directory under `runs/recognition/`
 | --- | --- |
 | `best.pt` | Selected inference weights, metadata, and validation metrics |
 | `last.pt` | Full state for epoch-boundary resume, including the best-weight snapshot |
-| `recognition_<a or c>_<date>.pt` | Export of the selected inference checkpoint |
+| `recognition_a_<date>.pt` | Export of the selected inference checkpoint |
 | `history.csv` | Loss, metrics, actual optimizer updates, and learning rates per group |
 | `training.png` | Recognition learning curves |
 | `config.yaml`, `resolved_config.json` | Recorded configuration and task metadata |
@@ -315,7 +308,7 @@ Use `last.pt` for resume. Each resumed run gets a new output directory. Model st
 
 Resume occurs after completed epochs. The trainer flushes accumulated gradients before it saves the checkpoint. Custom stateful samplers, distributed training, and recovery partway through a batch are outside the current contract.
 
-B0/B1 use the same version-1 checkpoint envelope and retain notebook-specific metadata. Their `last.pt` contains `task`, optimizer/scaler state, shared `training_config`, experiment `metadata`, RNG, loader RNG, and optional policy state. Their `best.pt` is an inference checkpoint; `embedding.pt` is an inference export containing only encoder weights under `task`. A/C and B0/B1 require their respective architecture loaders despite sharing the envelope. The notebook orchestrator gives every fit/resume invocation a unique `trainer_runs/` session and publishes stable `weights/` paths after a successful fit.
+B0/B1 use the same version-1 checkpoint envelope and retain notebook-specific metadata. Their `last.pt` contains `task`, optimizer/scaler state, shared `training_config`, experiment `metadata`, RNG, loader RNG, and optional policy state. Their `best.pt` is an inference checkpoint; `embedding.pt` is an inference export containing only encoder weights under `task`. Model A and B0/B1 require their respective architecture loaders despite sharing the envelope. The notebook orchestrator gives every fit/resume invocation a unique `trainer_runs/` session and publishes stable `weights/` paths after a successful fit.
 
 ## Integrate another task
 
@@ -328,13 +321,11 @@ Implement one `TrainingTask` that owns the model and every trainable loss compon
 
 The trainer owns backward, AMP, clipping, accumulation, optimizer updates, scheduling, stopping, and checkpoint state. A task must not perform those operations itself.
 
-Tasks can override `on_epoch_start(epoch)` to update deterministic objective schedules from the absolute one-based epoch. Return a mapping of finite scalar schedule metrics to include in epoch history. Names must not overlap existing training, validation, or evaluator metrics. The hook runs before training and validation and after restoring an epoch-boundary checkpoint. Derive schedule values from the epoch rather than an unsaved counter. `early_stopping_ready(epoch)` can delay default patience counting while that objective changes; an explicit `early_stopping_start_epoch` overrides this readiness check. Model C uses these hooks for [margin warmup](model-c-recovery-training.md).
-
 Call `seed_everything` before creating the model and loaders. Move the task to its device before creating the optimizer. Build the optimizer and scheduler with the shared factories, then call `Trainer.fit`. Use explicit loader generators, `seed_worker`, and nonpersistent workers for reproducible epoch-boundary resume. The [runnable example](../examples/shared_training.py) shows the complete sequence.
 
 Supply an evaluator callback for metrics such as AUC that require the whole validation set. It receives `(task, device)` and returns named finite metrics. Do not average AUC across batches. Task packages own their dataset formats, sampling, inference interfaces, and evaluation protocol.
 
-An optional `TrainingPolicy` supplies experiment-specific epoch/batch hooks, selection, stopping, and serializable policy state. It can adjust learning rates and annotate history while the trainer retains backward, AMP, clipping, updates, and checkpoint writes. B0/B1 use this extension to preserve their existing learning-rate schedule, TAR/AUC selection, and minimum semi-hard training budget. `ExperimentConfig.trainer_config(seed)` adapts notebook settings to the engine without replacing the experiment configuration with A/C YAML.
+An optional `TrainingPolicy` supplies experiment-specific epoch/batch hooks, selection, stopping, and serializable policy state. It can adjust learning rates and annotate history while the trainer retains backward, AMP, clipping, updates, and checkpoint writes. B0/B1 use this extension to preserve their existing learning-rate schedule, TAR/AUC selection, and minimum semi-hard training budget. `ExperimentConfig.trainer_config(seed)` adapts notebook settings to the engine without replacing the experiment configuration with Model A YAML.
 
 ## Run checks
 

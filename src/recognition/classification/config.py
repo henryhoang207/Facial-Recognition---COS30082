@@ -1,4 +1,4 @@
-"""Configuration boundary for Models A and C."""
+"""Configuration boundary for Model A."""
 
 import argparse
 from pathlib import Path
@@ -11,51 +11,24 @@ from src.recognition.verification import VerificationConfig
 from src.training.config import Settings, TrainingConfig, override_config, read_yaml
 
 
-class MarginWarmupConfig(Settings):
-    enabled: bool = False
-    start_margin: float = Field(default=0.0, ge=0, lt=1.5707963267948966)
-    hold_epochs: int = Field(default=3, ge=0)
-    ramp_epochs: int = Field(default=5, gt=0)
-
-    def value(self, epoch: int, target: float) -> float:
-        if not self.enabled:
-            return target
-        fraction = min(1.0, max(0.0, (epoch - self.hold_epochs) / self.ramp_epochs))
-        return self.start_margin + (target - self.start_margin) * fraction
-
-
 class ModelConfig(Settings):
-    variant: Literal["a", "c"]
+    variant: Literal["a"]
     backbone: Literal["resnet18"]
     embedding_dim: int = Field(gt=0)
     initialization: Literal["random", "imagenet"]
-    arcface_scale: float = Field(gt=0)
-    arcface_margin: float = Field(ge=0, lt=1.5707963267948966)
-    arcface_margin_warmup: MarginWarmupConfig = Field(
-        default_factory=MarginWarmupConfig
-    )
-    arcface_gradient: Literal["analytic", "straight_through"] = "analytic"
-    prototype_regularization_weight: float = Field(default=0.0, ge=0)
-    rectify_wrong_class_logits: bool = False
-    embedding_normalization: Literal["none", "batchnorm"] = "none"
-    embedding_bn_affine: bool = True
-    projection_bias: bool = True
 
-    @model_validator(mode="after")
-    def validate_objective(self) -> Self:
-        if (
-            self.arcface_margin_warmup.enabled
-            and self.arcface_margin_warmup.start_margin > self.arcface_margin
-        ):
-            raise ValueError("margin warmup start cannot exceed the target margin")
-        if self.variant == "a" and (
-            self.arcface_margin_warmup.enabled
-            or self.arcface_gradient != "analytic"
-            or self.prototype_regularization_weight
-            or self.rectify_wrong_class_logits
-        ):
-            raise ValueError("ArcFace objective controls require Model C")
-        return self
+    @classmethod
+    def from_checkpoint(cls, values: dict) -> Self:
+        if values.get("variant") != "a":
+            raise ValueError("this loader only supports Model A checkpoints")
+        # Earlier Model A checkpoints recorded these two unused objective settings.
+        return cls.model_validate(
+            {
+                k: v
+                for k, v in values.items()
+                if k not in {"arcface_scale", "arcface_margin"}
+            }
+        )
 
 
 class PreprocessConfig(Settings):
@@ -99,7 +72,7 @@ class RecognitionConfig(Settings):
 
 
 def load_config(argv: list[str] | None = None) -> tuple[RecognitionConfig, Path | None]:
-    parser = argparse.ArgumentParser(description="Train recognition A/C from YAML")
+    parser = argparse.ArgumentParser(description="Train recognition Model A from YAML")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(

@@ -3,8 +3,6 @@ model:
   backbone: resnet18
   embedding_dim: 128
   initialization: random
-  arcface_scale: 30.0
-  arcface_margin: 0.3
 preprocess:
   size: 112
   crop_scale: 1.0
@@ -21,7 +19,7 @@ data:
   train_dir: train_data
   val_dir: val_data
   test_dir: test_data
-  manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/vggface2_classification.csv
+  manifest: ../../data/manifests/vggface2_full/vggface2_classification.csv
   cache: auto
   cache_max_fraction: 0.8
   cache_reserve_gib: 2.0
@@ -80,8 +78,8 @@ output_dir: ../../runs/recognition
 evaluator: null
 verification:
   root: ../../data/VGGFace2
-  pairs: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/verification_pairs_val.csv
-  bbox_manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/bbox_manifest.csv
+  pairs: ../../data/manifests/vggface2_full/verification_pairs_val.csv
+  bbox_manifest: null
   pairs_format: csv
   target_fpr: 0.01
   selection_metric: cosine

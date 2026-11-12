@@ -18,7 +18,7 @@ Attendance is only logged when the face is recognised **and** live.
 | Member | Owns | Code |
 | --- | --- | --- |
 | Hoàng Hữu Hoan (lead) | Anti-spoofing; repo, notebook template, checkpoints, submission | `src/liveness/` |
-| Giáp Hoàng Gia Khánh | Face recognition Model A (classification), optional ArcFace; shared ROC/AUC evaluation and threshold | `src/recognition/` |
+| Giáp Hoàng Gia Khánh | Face recognition Model A (classification); shared ROC/AUC evaluation and threshold | `src/recognition/` |
 | Lê Đức Anh | Face recognition Model B (triplet loss) | `src/recognition/` |
 | Trần Mạnh Đức | Emotion detection | `src/emotion/` |
 | Lê Đức Thành | Datasets, shared face crop + loaders, spoof recordings, group report | `src/common/` |
@@ -30,7 +30,7 @@ Attendance is only logged when the face is recognised **and** live.
 app/                 web app (webcam, registration, attendance log)
 notebooks/           training notebooks, one per model; start from 00_template.ipynb
 src/common/          face crop, data loaders, shared model interfaces
-src/recognition/     classification/ (A/C), identification/ (B0/B1), verification/, preprocessing/
+src/recognition/     classification/ (Model A), identification/ (B0/B1), verification/, preprocessing/
 src/liveness/        anti-spoofing model
 src/emotion/         emotion model
 reports/figures/     result tables and plots used in the report
@@ -94,14 +94,14 @@ Task-specific commands are listed below.
 
 ### Face recognition: Model A (classification)
 
-Gia Khánh: Model A (ResNet-18 + cross-entropy), Model C (ArcFace), and shared verification evaluation.
+Gia Khánh: Model A (ResNet-18 + cross-entropy), and shared verification evaluation.
 See [training, YAML configuration, inference and ROC/AUC](docs/recognition-training.md).
-The reusable loop is in `src/training/`; A/C are isolated in `src/recognition/classification/`. See the [recognition package map](src/recognition/README.md) for module responsibilities.
+The reusable loop is in `src/training/`. Model A is in `src/recognition/classification/`. See the [recognition package map](src/recognition/README.md) for module responsibilities.
 Local dataset manifests are connected; real-data accuracy, AUC and CPU latency are pending full training and evaluation.
 
 ### Face recognition: Model B (triplet loss)
 
-Run [triplet_loss.ipynb](notebooks/metrics-learn/triplet_loss.ipynb) for B0 or [arcface.ipynb](notebooks/metrics-learn/arcface.ipynb) for B1 using the shared CUDA kernel. Both train an iResNet-34 encoder from random initialization and export normalized 256-dimensional embeddings. Their implementation is in `src/recognition/identification/`, with `MetricLearningTask` using the same `Trainer.fit` and checkpoint schema as A/C. The notebooks keep their own `ExperimentConfig`, P-by-K sampling, mining, and identity-disjoint evaluation protocol. Each trains one seed-42 run with 20 CPU loading workers, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. New outputs default to `artifacts/main-cu130-margin-0.3-gpu-aug/`; existing private-loop artifacts remain untouched. See the [metric-learning notebook guide](notebooks/metrics-learn/RECOGNITION.md) for artifacts, resume rules, inference, and bounded GPU smoke tests.
+Run [triplet_loss.ipynb](notebooks/metrics-learn/triplet_loss.ipynb) for B0 or [arcface.ipynb](notebooks/metrics-learn/arcface.ipynb) for B1 using the shared CUDA kernel. Both train an iResNet-34 encoder from random initialization and export normalized 256-dimensional embeddings. Their implementation is in `src/recognition/identification/`, with `MetricLearningTask` using the same `Trainer.fit` and checkpoint schema as Model A. The notebooks keep their own `ExperimentConfig`, P-by-K sampling, mining, and identity-disjoint evaluation protocol. Each trains one seed-42 run with 20 CPU loading workers, CUDA augmentation and training, patience 3, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. New outputs default to `artifacts/main-cu130-margin-0.3-gpu-aug/`; existing private-loop artifacts remain untouched. See the [metric-learning notebook guide](notebooks/metrics-learn/RECOGNITION.md) for artifacts, resume rules, inference, and bounded GPU smoke tests.
 
 ### Anti-spoofing
 

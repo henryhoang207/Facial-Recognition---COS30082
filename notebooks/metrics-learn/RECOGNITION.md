@@ -4,7 +4,7 @@ Use [triplet_loss.ipynb](triplet_loss.ipynb) for B0 and [arcface.ipynb](arcface.
 
 The notebook implementation lives in `src/recognition/identification/`. Import configuration, data preparation, models, losses, training, and notebook helpers from `src.recognition.identification`. Batched embedding metrics live in `src.recognition.identification.embedding_evaluation`; `src.recognition.verification.evaluator` provides the separate shared `embed(face)` pair-evaluation API. See the [package map](../../src/recognition/README.md) for the complete module layout.
 
-The A/C classification package uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the fixed-setting notebook protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
+Model A uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the fixed-setting notebook protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
 
 From the repository root in PowerShell:
 
@@ -69,7 +69,7 @@ embedder = MetricEmbedder("/absolute/path/to/weights/embedding.pt", device="cpu"
 vector = embedder.embed(face)  # BGR uint8 shared crop, shape (112, 112, 3).
 ```
 
-The output is a normalized 256-dimensional NumPy float32 vector. In a shared verification YAML model entry, set `factory: src.recognition.identification.predictor:MetricEmbedder`, `size: 112`, and `crop_scale: 1.0`. The adapter accepts metric `best.pt` and `embedding.pt` inference checkpoints and ignores any loss head in the selected task snapshot. The common checkpoint schema does not make A/C and B0/B1 encoder weights interchangeable.
+The output is a normalized 256-dimensional NumPy float32 vector. In a shared verification YAML model entry, set `factory: src.recognition.identification.predictor:MetricEmbedder`, `size: 112`, and `crop_scale: 1.0`. The adapter accepts metric `best.pt` and `embedding.pt` inference checkpoints and ignores any loss head in the selected task snapshot. The common checkpoint schema does not make Model A and B0/B1 encoder weights interchangeable.
 
 To verify the entire notebook flow with a tiny real-image subset:
 

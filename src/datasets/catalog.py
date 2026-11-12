@@ -9,6 +9,7 @@ import random
 import sqlite3
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from pathlib import Path
 from uuid import uuid4
 
@@ -97,25 +98,21 @@ class FingerprintCache:
             }
 
     def inspect(self, paths: list[Path], workers: int) -> dict[str, dict]:
-        with sqlite3.connect(self.path) as connection:
+        return {row["path"]: row for row in self.iter_inspect(paths, workers)}
+
+    def iter_inspect(self, paths: Iterable[Path], workers: int):
+        columns = ("path", "size", "mtime", "sha256", "width", "height", "error")
+        with (
+            sqlite3.connect(self.path) as connection,
+            ThreadPoolExecutor(max_workers=workers) as pool,
+        ):
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS images (path TEXT PRIMARY KEY, "
                 "size INTEGER, mtime INTEGER, sha256 TEXT, "
                 "width INTEGER, height INTEGER, error TEXT)"
             )
-            cached = {
-                row[0]: dict(
-                    zip(
-                        ("path", "size", "mtime", "sha256", "width", "height", "error"),
-                        row,
-                        strict=True,
-                    )
-                )
-                for row in connection.execute("SELECT * FROM images")
-            }
 
-            def inspect_or_reuse(path):
-                previous = cached.get(str(path))
+            def inspect_or_reuse(path, previous):
                 if previous is not None:
                     try:
                         stat = path.stat()
@@ -128,19 +125,27 @@ class FingerprintCache:
                         pass
                 return self._inspect(path), True
 
-            result = {}
-            print(f"fingerprints: validating {len(paths)} images", flush=True)
-            for index, (record, changed) in enumerate(
-                ordered_parallel(inspect_or_reuse, paths, workers), 1
-            ):
-                result[record["path"]] = record
-                if changed:
-                    connection.execute(
-                        "INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        tuple(record.values()),
+            checked = 0
+            for batch in batched(paths, 512):
+                keys = tuple(map(str, batch))
+                placeholders = ",".join("?" for _ in keys)
+                cached = {
+                    row[0]: dict(zip(columns, row, strict=True))
+                    for row in connection.execute(
+                        f"SELECT * FROM images WHERE path IN ({placeholders})", keys
                     )
-                if index % 20000 == 0:
+                }
+                results = list(
+                    pool.map(inspect_or_reuse, batch, (cached.get(key) for key in keys))
+                )
+                connection.executemany(
+                    "INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (tuple(record.values()) for record, changed in results if changed),
+                )
+                if checked // 20000 != (checked + len(batch)) // 20000:
                     connection.commit()
-                    print(f"fingerprints: checked {index}/{len(paths)}", flush=True)
+                    print(f"fingerprints: checked {checked + len(batch)}", flush=True)
+                checked += len(batch)
+                for record, _ in results:
+                    yield record
             connection.commit()
-        return result

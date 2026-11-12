@@ -9,14 +9,14 @@ See the [shared training guide](training-guide.md) for environment setup and tra
 Run from the repository root with the training environment active:
 
 ```bash
-python -m src.datasets.prepare --config configs/datasets.yaml
-python -m src.datasets.validate --config configs/datasets.yaml
+python -m src.datasets.prepare --config configs/datasets.yaml --only liveness emotion team
+python -m src.datasets.validate --config configs/datasets.yaml --only liveness emotion team
 ```
 
 Use `--only recognition`, `--only liveness`, `--only emotion`, or `--only team` to select a dataset. Multiple names can follow `--only`. Override configuration through arguments:
 
 ```bash
-python -m src.datasets.prepare --config configs/datasets.yaml --only recognition --set recognition.positive_pairs=1500 --set recognition.negative_pairs=1500
+python -m src.datasets.prepare --config configs/datasets.yaml --only recognition --set output_dir=../data/manifests/vggface2_full --set recognition.positive_pairs=1500 --set recognition.negative_pairs=1500
 ```
 
 Relative paths are resolved from the YAML directory. The configuration defines seed, holdout fractions, pair counts, workers, and gallery detector settings. CSV/JSON output is deterministic for the same data and seed.
@@ -25,44 +25,38 @@ Relative paths are resolved from the YAML directory. The configuration defines s
 
 `dataset_report.json` records export results. The independent validation command writes `validation_report.json`, checking mappings, leakage, pair labels, class sets, clip/frame associations, and gallery bboxes. Images, databases, gallery photos, and generated manifests remain under ignored `data/` paths.
 
-Local export results on November 1, 2026:
+Other local export results on November 1, 2026:
 
 | Dataset | Exported data |
 | --- | --- |
-| VGGFace2 classification | 480 classes; 141,068 train, 17,682 validation, 17,648 test images |
-| VGGFace2 verification | Validation and test each have 30 identities, 3,000 positive pairs, and 3,000 negative pairs |
 | CelebA liveness | 75,780 train, 13,367 validation, 49,646 test images |
 | DFEW | 11,697 benchmark clips, 187,152 frames, all five folds |
 | Team gallery | 36 photos from six people; 10 reviewed crop candidates and 26 photos requiring detector/bbox review |
 
-VGGFace2 had no rejected images from header checks or conflicting-identity hashes. CelebA excluded 61 source-training rows belonging to three subjects also present in test. Another 51,917 rows were omitted because their attack types were not selected. Source images and databases remain unchanged.
+CelebA excluded 61 source-training rows belonging to three subjects also present in test. Another 51,917 rows were omitted because their attack types were not selected. Source images and databases remain unchanged.
 
-## Use VGGFace2 for A, B, and C
+## Use the current VGGFace2 export
 
-The source catalog contains 197,693 images: 480 identities in `train/` and 60 different identities in `val/`. Its global DuckDB mapping assigns indices 0 through 539. A classifier trained on the 480 source-training identities cannot classify the 60 unseen validation identities as known classes.
+The current DuckDB catalogs 3,137,807 pre-cropped images in `data/VGGFace2/train/id_*/`. Its `train` partition contains 7,768 identities, and its `val` partition contains 863 unseen identities. Both partitions are stored under the physical `train/` directory. Use the DuckDB `split` column to determine a source image's role.
 
-The generated manifests separate classification from unseen-identity verification:
-
-- `vggface2_classification.csv` uses source-training identities and creates train, validation, and test image groups within each identity. All three splits contain the same 480 classes. The default group proportions are approximately 80/10/10, so image counts can differ slightly from those proportions.
-- `vggface2_verification.csv` uses the unseen source-validation identities, split into separate verification validation and test identity pools, with 30 identities each by default.
-- `verification_pairs_val.csv` and `verification_pairs_test.csv` each contain 3,000 same-identity pairs with label 1 and 3,000 different-identity pairs with label 0 by default.
-- `vggface2_class_to_idx.json` stores contiguous classifier indices 0 through 479. The CSV also retains source indices for comparison.
-- `vggface2_rejected.csv` records missing images, invalid headers, or identical bytes assigned to conflicting identities.
-
-Images with the same SHA-256 or filename prefix within an identity stay in the same classification split. A filename prefix is a conservative grouping key, not a known recording session. Cross-identity byte duplicates are excluded on both sides rather than assigned a guessed label. Verification pairs are unique, contain different image bytes, and have labels checked against their identities.
-
-This is a project protocol generated from the local subset, not an official VGGFace2 test result. Session metadata is unavailable. Filename and hash grouping cannot establish that all near-duplicates or same-session images have been separated.
-
-These files are the base manifests. A, C, and verification now select the derived bbox protocol described below. The unseen verification identities and team photos do not enter the classifier. B can use the selected protocol's classification CSV and mapping with its own P-by-K identity sampler.
-
-For detector-generated face bboxes, run the separate [face bbox preparation workflow](recognition-face-preparation.md). It derives filtered, versioned classification and verification manifests from these base exports and leaves the original files intact. Recognition configs can select that generation; model comparisons must use the same selected protocol.
+Generate the Model A and verification inputs in a separate output directory:
 
 ```bash
-python -m src.recognition.classification.train --config configs/recognition/model_a.yaml
-python -m src.recognition.classification.train --config configs/recognition/model_c.yaml
+python -m src.datasets.prepare --config configs/datasets.yaml --only recognition --set output_dir=../data/manifests/vggface2_full
+python -m src.datasets.validate --config configs/datasets.yaml --only recognition --set output_dir=../data/manifests/vggface2_full
 ```
 
-These commands start full training. Manifest preparation does not execute them.
+- `vggface2_classification.csv` splits the source-training identities into roughly 80% training, 10% classification validation, and 10% classification test. Each classifier split contains the same identities.
+- `vggface2_class_to_idx.json` maps classifier identities to contiguous labels. The classification CSV retains the original DuckDB index in `source_identity_idx`.
+- `vggface2_verification.csv` contains the unseen source-validation identities in disjoint validation and test groups. Within an identity, it retains one representative per SHA-256.
+- `verification_pairs_val.csv` and `verification_pairs_test.csv` each contain 3,000 genuine pairs and 3,000 impostor pairs by default. Labels are 1 for genuine and 0 for impostor.
+- `vggface2_rejected.csv` records missing or unreadable files and byte-identical images assigned to different identities.
+
+The November 12, 2026 export has 2,257,252 classification training images, 282,110 validation images, and 282,159 test images across 7,768 classes. The 315,865 verification images come from 432 validation identities and 431 test identities. All cataloged images had 112 by 112 headers. The exporter excluded 36 images across 18 hashes with conflicting identities and removed 385 repeated verification copies within an identity.
+
+The exporter hashes image bytes and checks image headers. Classification keeps SHA-256 matches and filename-prefix groups in the same split. These checks cover exact matches. They cannot establish separation of visually similar images or recording sessions. The export uses the current pre-cropped images directly. The older `test/n*/` tree is outside the current DuckDB protocol and needs a verified identity crosswalk before use alongside it.
+
+Use `configs/recognition/model_a.yaml` for training and `configs/recognition/verification.yaml` for verification. Model B can use the classification CSV and mapping with its own sampler. For loose source images, see the [optional bbox workflow](recognition-face-preparation.md).
 
 ## Use processed CelebA-Spoof with liveness
 

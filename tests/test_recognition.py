@@ -1,4 +1,4 @@
-"""A/C configuration, training, inference and shared verification checks."""
+"""Model A configuration, training, inference and shared verification checks."""
 
 import json
 from pathlib import Path
@@ -8,22 +8,16 @@ import numpy as np
 import pytest
 import torch
 import yaml
-from torch import nn
-from torch.nn import functional as F
-from torch.utils.data import DataLoader, TensorDataset
 
 from src.recognition.classification.augmentation import FaceBatchTransform
 from src.recognition.classification.cache import cache_budget, cache_loaders
 from src.recognition.classification.config import (
-    ModelConfig,
     RecognitionConfig,
     load_config,
 )
 from src.recognition.classification.data import FaceTransform, make_loaders
 from src.recognition.classification.evaluate import evaluate
-from src.recognition.classification.models import ArcFaceHead, ClassificationModel
-from src.recognition.classification.predictor import RecognitionEmbedder, load_task
-from src.recognition.classification.task import RecognitionTask
+from src.recognition.classification.predictor import RecognitionEmbedder
 from src.recognition.classification.train import train
 from src.recognition.classification.verification import TrainingVerificationEvaluator
 from src.recognition.verification import (
@@ -32,7 +26,7 @@ from src.recognition.verification import (
     score_metrics,
 )
 from src.recognition.verification.run import EvaluationConfig, VerificationRunner
-from src.training import Trainer, make_optimizer, make_scheduler, seed_everything
+from src.training import Trainer
 from src.training.config import read_yaml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -46,7 +40,7 @@ def small_cpu_pool():
     torch.set_num_threads(previous)
 
 
-def tiny_config(tmp_path, variant="a", device="cpu"):
+def tiny_config(tmp_path, device="cpu"):
     rng = np.random.default_rng(42)
     for split in ("train_data", "val_data", "test_data"):
         for identity in ("alice", "bob"):
@@ -55,7 +49,7 @@ def tiny_config(tmp_path, variant="a", device="cpu"):
             for index in range(2):
                 image = rng.integers(0, 256, (40, 40, 3), dtype=np.uint8)
                 assert cv2.imwrite(str(directory / f"{index}.png"), image)
-    raw = read_yaml(REPO / f"configs/recognition/model_{variant}.yaml")
+    raw = read_yaml(REPO / "configs/recognition/model_a.yaml")
     raw["data"].update(root=str(tmp_path / "data"), manifest=None)
     raw["output_dir"] = str(tmp_path / "runs")
     raw["preprocess"].update(
@@ -142,22 +136,12 @@ def test_yaml_cli_overrides_do_not_mutate_file(tmp_path):
         load_config(["--config", str(path)])
 
 
-def test_bgr_preprocessing_and_arcface_target_margin(tmp_path):
+def test_bgr_preprocessing_converts_to_rgb(tmp_path):
     cfg = tiny_config(tmp_path)
     face = np.zeros((32, 32, 3), dtype=np.uint8)
     face[:, :, 2] = 255
     tensor = FaceTransform(cfg.preprocess)(face)
     assert tensor[:, 0, 0].tolist() == [1.0, -1.0, -1.0]
-    head = ArcFaceHead(2, 2, scale=30, margin=0.3)
-    with torch.no_grad():
-        head.weight.copy_(torch.eye(2))
-    features = torch.tensor([[0.8, 0.6]], requires_grad=True)
-    logits = head(features, torch.tensor([0]))
-    assert logits[0, 0].item() == pytest.approx(17.6081, abs=0.001)
-    assert logits[0, 1].item() == pytest.approx(18, abs=0.001)
-    logits.sum().backward()
-    assert torch.isfinite(features.grad).all()
-    assert head.weight.grad is not None
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
@@ -325,12 +309,11 @@ def test_training_oom_retries_without_cache_and_preserves_weights(
         assert torch.equal(actual["task"][key], baseline["task"][key]), key
 
 
-@pytest.mark.parametrize("variant", ["a", "c"])
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_train_checkpoint_embed_and_classification_test(tmp_path, variant, device):
+def test_train_checkpoint_embed_and_classification_test(tmp_path, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA GPU unavailable")
-    cfg = tiny_config(tmp_path, variant, device)
+    cfg = tiny_config(tmp_path, device)
     result = train(cfg)
     embedder = RecognitionEmbedder(result.best_checkpoint)
     face = np.random.default_rng(5).integers(0, 256, (32, 32, 3), dtype=np.uint8)
@@ -344,9 +327,27 @@ def test_train_checkpoint_embed_and_classification_test(tmp_path, variant, devic
     assert 0 <= scores["accuracy"] <= 1
     assert 0 <= result.history[0]["val_accuracy"] <= 1
     assert result.history[0]["train_optimizer_steps"] > 0
-    if variant == "c":
-        payload = torch.load(result.last_checkpoint, weights_only=True)
-        assert "model.head.weight" in payload["task"]
+
+
+def test_previous_model_a_checkpoint_can_embed_and_resume(tmp_path):
+    cfg = tiny_config(tmp_path)
+    cfg = cfg.model_copy(
+        update={"training": cfg.training.model_copy(update={"scheduler": "none"})}
+    )
+    result = train(cfg)
+    saved = torch.load(result.last_checkpoint, weights_only=True)
+    saved["metadata"]["model_config"].update(arcface_scale=30.0, arcface_margin=0.3)
+    legacy = tmp_path / "previous.pt"
+    torch.save(saved, legacy)
+    assert RecognitionEmbedder(legacy).embedding_dim == 128
+    continued = cfg.model_copy(
+        update={"training": cfg.training.model_copy(update={"epochs": 2})}
+    )
+    assert len(train(continued, resume=legacy).history) == 2
+    saved["metadata"]["model_config"]["variant"] = "c"
+    torch.save(saved, legacy)
+    with pytest.raises(ValueError, match="only supports Model A"):
+        RecognitionEmbedder(legacy)
 
 
 def test_training_selects_checkpoint_using_verification_auc(tmp_path):
@@ -713,230 +714,3 @@ def test_verification_report_baseline_calibration_and_test_reuse(tmp_path):
     )
     with pytest.raises(ValueError, match="requires"):
         VerificationRunner(cfg.model_copy(update={"calibration": None})).run()
-
-
-def c_model_config(**updates):
-    raw = read_yaml(REPO / "configs/recognition/model_c.yaml")["model"]
-    raw.update(updates)
-    return ModelConfig.model_validate(raw)
-
-
-def test_margin_warmup_has_exact_hold_ramp_and_final_values():
-    config = c_model_config(
-        arcface_margin_warmup={"enabled": True, "hold_epochs": 3, "ramp_epochs": 5}
-    )
-    schedule = config.arcface_margin_warmup
-    assert [schedule.value(epoch, 0.3) for epoch in range(1, 11)] == pytest.approx(
-        [0, 0, 0, 0.06, 0.12, 0.18, 0.24, 0.3, 0.3, 0.3]
-    )
-    disabled = c_model_config().arcface_margin_warmup
-    assert disabled.value(1, 0.3) == 0.3
-    with pytest.raises(ValueError, match="ramp_epochs"):
-        c_model_config(arcface_margin_warmup={"enabled": True, "ramp_epochs": 0})
-    with pytest.raises(ValueError, match="cannot exceed"):
-        c_model_config(arcface_margin_warmup={"enabled": True, "start_margin": 0.4})
-    with pytest.raises(ValueError, match="require Model C"):
-        c_model_config(variant="a", arcface_gradient="straight_through")
-
-
-def test_straight_through_preserves_forward_and_changes_only_margin_gradient():
-    analytic = ArcFaceHead(2, 2, scale=30, margin=0.3)
-    surrogate = ArcFaceHead(
-        2, 2, scale=30, margin=0.3, gradient_policy="straight_through"
-    )
-    with torch.no_grad():
-        analytic.weight.copy_(torch.eye(2))
-        surrogate.weight.copy_(analytic.weight)
-    x = torch.tensor([[0.8, 0.6]], requires_grad=True)
-    labels = torch.tensor([0])
-    logits = analytic(x, labels)
-    adjusted = surrogate(x, labels)
-    torch.testing.assert_close(adjusted, logits)
-    actual = torch.autograd.grad(F.cross_entropy(adjusted, labels), x)[0]
-    unadjusted = surrogate(x)
-    coefficients = (adjusted.softmax(1) - F.one_hot(labels, 2)).detach()
-    expected = torch.autograd.grad((unadjusted * coefficients).sum(), x)[0]
-    torch.testing.assert_close(actual, expected)
-    analytical = torch.autograd.grad(F.cross_entropy(logits, labels), x)[0]
-    assert not torch.allclose(actual, analytical)
-    analytic.margin = 0
-    torch.testing.assert_close(analytic(x, labels), analytic(x))
-
-
-def test_wrong_class_rectification_preserves_target_and_inference():
-    plain = ArcFaceHead(2, 2, scale=30, margin=0.3)
-    rectified = ArcFaceHead(2, 2, scale=30, margin=0.3, rectify_wrong_class_logits=True)
-    with torch.no_grad():
-        plain.weight.copy_(torch.eye(2))
-        rectified.weight.copy_(plain.weight)
-    x, labels = torch.tensor([[0.8, -0.6]]), torch.tensor([0])
-    expected, actual = plain(x, labels), rectified(x, labels)
-    assert actual[0, 0] == expected[0, 0]
-    assert expected[0, 1].item() == pytest.approx(-18)
-    assert actual[0, 1] == 0
-    torch.testing.assert_close(rectified(x), plain(x))
-
-
-def test_prototype_regularization_is_added_and_reported_separately():
-    config = c_model_config(embedding_dim=2, prototype_regularization_weight=0.5)
-    model = ClassificationModel(config, 2)
-    model.encoder = nn.Identity()
-    task = RecognitionTask(model)
-    with torch.no_grad():
-        model.head.weight.copy_(torch.tensor([[1.0, 0.0], [0.6, 0.8]]))
-    images, labels = torch.eye(2), torch.tensor([0, 1])
-    result = task.step((images, labels))
-    # Mean of the two unit prototypes is (0.8, 0.4).
-    expected_penalty = 0.5 * (0.8**2 + 0.4**2) ** 0.5
-    classification = result.metrics["classification_loss"].total / 2
-    assert result.loss.item() == pytest.approx(classification + expected_penalty)
-    assert result.metrics["prototype_mean_norm"].total / 2 == pytest.approx(0.8**0.5)
-    result.loss.backward()
-    assert torch.isfinite(model.head.weight.grad).all()
-
-
-def test_margin_resume_restores_weights_bn_and_epoch_metrics_exactly(tmp_path):
-    model_config = c_model_config(
-        embedding_dim=4,
-        embedding_normalization="batchnorm",
-        arcface_gradient="straight_through",
-        prototype_regularization_weight=0.1,
-        arcface_margin_warmup={"enabled": True, "hold_epochs": 1, "ramp_epochs": 2},
-    )
-    base = tiny_config(tmp_path, "c")
-    cfg = base.training.model_copy(
-        update={
-            "epochs": 6,
-            "scheduler": "cosine",
-            "parameter_groups": (),
-            "deterministic": True,
-            "amp": False,
-            "monitor": "val_constant",
-            "mode": "min",
-            "patience": 1,
-        }
-    )
-
-    def run(directory, *, resume=None, interrupt=False):
-        seed_everything(17, True)
-        model = ClassificationModel(model_config, 2)
-        model.encoder.backbone = nn.Linear(3, 512)
-        task = RecognitionTask(model)
-        optimizer = make_optimizer(task, cfg)
-        dataset = TensorDataset(
-            torch.arange(24).float().reshape(8, 3) / 10, torch.tensor([0, 1] * 4)
-        )
-        loaders = tuple(
-            DataLoader(
-                dataset,
-                batch_size=4,
-                shuffle=train,
-                generator=torch.Generator().manual_seed(11),
-            )
-            for train in (True, False)
-        )
-        calls = 0
-
-        def evaluator(task, device):
-            nonlocal calls
-            calls += 1
-            if interrupt and calls == 3:
-                raise RuntimeError("interrupted after epoch two")
-            return {"val_constant": 1.0}
-
-        trainer = Trainer(
-            task,
-            optimizer,
-            cfg,
-            directory,
-            scheduler=make_scheduler(optimizer, cfg),
-            metadata={"model_config": model_config.model_dump(mode="json")},
-            evaluator=evaluator,
-        )
-        return trainer.fit(*loaders, resume=resume)
-
-    full = run(tmp_path / "full-margin")
-    assert [row["arcface_margin"] for row in full.history] == pytest.approx(
-        [0, 0.15, 0.3, 0.3]
-    )
-    # Patience 1 does not stop the run before the margin reaches its target.
-    assert len(full.history) == 4
-    interrupted = tmp_path / "interrupted-margin"
-    with pytest.raises(RuntimeError, match="after epoch two"):
-        run(interrupted, interrupt=True)
-    resumed = run(tmp_path / "resumed-margin", resume=interrupted / "last.pt")
-    assert resumed.history == full.history
-    expected = torch.load(full.last_checkpoint, weights_only=True)
-    actual = torch.load(resumed.last_checkpoint, weights_only=True)
-    for key, value in expected["task"].items():
-        torch.testing.assert_close(actual["task"][key], value, rtol=0, atol=0)
-    assert actual["bad_epochs"] == expected["bad_epochs"] == 1
-
-
-def test_loading_checkpoint_restores_its_margin_and_bn_design(tmp_path):
-    cfg = c_model_config(
-        embedding_normalization="batchnorm",
-        arcface_margin_warmup={"enabled": True, "hold_epochs": 1, "ramp_epochs": 2},
-    )
-    task = RecognitionTask(ClassificationModel(cfg, 2))
-    checkpoint = tmp_path / "scheduled.pt"
-    torch.save(
-        {
-            "epoch": 2,
-            "task": task.state_dict(),
-            "metadata": {
-                "task": "recognition_classification",
-                "model_config": cfg.model_dump(mode="json", exclude_defaults=True),
-                "class_to_idx": {"alice": 0, "bob": 1},
-            },
-        },
-        checkpoint,
-    )
-    loaded, _ = load_task(checkpoint, torch.device("cpu"))
-    assert loaded.model.head.margin == pytest.approx(0.15)
-    assert isinstance(loaded.model.encoder.embedding_norm, nn.BatchNorm1d)
-    assert not loaded.model.encoder.embedding_norm.training
-
-
-def test_default_objective_metadata_matches_legacy_model_c_schema():
-    metadata = c_model_config().model_dump(mode="json", exclude_defaults=True)
-    assert metadata == {
-        "variant": "c",
-        "backbone": "resnet18",
-        "embedding_dim": 128,
-        "initialization": "random",
-        "arcface_scale": 30.0,
-        "arcface_margin": 0.3,
-    }
-
-
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_recovery_controls_train_and_reload_real_encoder(tmp_path, device):
-    if device == "cuda" and (
-        not torch.cuda.is_available()
-        or not torch.cuda.is_bf16_supported(including_emulation=False)
-    ):
-        pytest.skip("Native BF16 GPU unavailable")
-    cfg = tiny_config(tmp_path, "c", device)
-    model = c_model_config(
-        embedding_normalization="batchnorm",
-        arcface_gradient="straight_through",
-        prototype_regularization_weight=0.25,
-        rectify_wrong_class_logits=True,
-        arcface_margin_warmup={"enabled": True, "hold_epochs": 0, "ramp_epochs": 2},
-    )
-    cfg = cfg.model_copy(update={"model": model})
-    seed_everything(cfg.training.seed)
-    initial = ClassificationModel(model, 2).head.weight.detach().clone()
-    result = train(cfg)
-    loaded, payload = load_task(result.best_checkpoint, torch.device(device))
-    assert loaded.model.head.margin == pytest.approx(0.15)
-    assert not torch.equal(loaded.model.head.weight.cpu(), initial)
-    assert not loaded.model.encoder.embedding_norm.training
-    assert payload["task"]["model.encoder.embedding_norm.num_batches_tracked"] == 2
-    row = result.history[0]
-    assert row["arcface_margin"] == pytest.approx(0.15)
-    assert row["val_loss"] == pytest.approx(
-        row["val_classification_loss"] + 0.25 * row["val_prototype_mean_norm"]
-    )
-    assert all(torch.isfinite(value).all() for value in payload["task"].values())

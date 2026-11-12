@@ -81,6 +81,9 @@ def test_recognition_manifests_are_deterministic_and_loadable(preparation_config
     before = {path.name: path.read_bytes() for path in config.output_dir.glob("*.csv")}
     assert first["classification_classes"] == 2
     assert first["classification_splits"] == {"train": 8, "val": 2, "test": 2}
+    assert first["verified_image_dimensions"] == {"48x48": 36}
+    assert first["verification_images"] == 24
+    assert first["verification_duplicate_rows"] == 0
     assert RecognitionPreparer(config).prepare() == first
     assert before == {
         path.name: path.read_bytes() for path in config.output_dir.glob("*.csv")
