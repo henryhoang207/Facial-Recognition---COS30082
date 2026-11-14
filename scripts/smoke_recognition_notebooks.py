@@ -102,7 +102,7 @@ def main() -> None:
             "working_directory": str(NOTEBOOK_DIRECTORY),
             "artifacts_root": str(artifacts_root),
             "training_artifacts_root": str(artifacts_root / "smoke"),
-            "shared_data_manifests": str(ROOT / "artifacts" / "shared" / "manifests"),
+            "shared_data_manifests": str(ROOT / "data" / "manifests"),
             "scope": "Bounded real-image GPU integration check, not full model training.",
         }
         (output / f"{name}_result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

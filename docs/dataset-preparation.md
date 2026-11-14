@@ -53,9 +53,13 @@ Images with the same SHA-256 or filename prefix within an identity stay in the s
 
 This is a project protocol generated from the local subset, not an official VGGFace2 test result. Session metadata is unavailable. Filename and hash grouping cannot establish that all near-duplicates or same-session images have been separated.
 
-These files are the base manifests. A, C, and verification now select the derived bbox protocol described below. The unseen verification identities and team photos do not enter the classifier. B can use the selected protocol's classification CSV and mapping with its own P-by-K identity sampler.
+These files are the base manifests. A, C, and their verification workflow select the derived bbox protocol described below. B0/B1 use the base manifests directly with their P-by-K identity sampler. The unseen verification identities and team photos do not enter the classifier.
 
 For detector-generated face bboxes, run the separate [face bbox preparation workflow](recognition-face-preparation.md). It derives filtered, versioned classification and verification manifests from these base exports and leaves the original files intact. Recognition configs can select that generation; model comparisons must use the same selected protocol.
+
+The B0/B1 identification notebooks use `load_image_protocol` on `data/manifests/`. The current source images are already tightly cropped at 112x112, so this pipeline does not require detector bboxes or an additional face crop. Its adapter uses classification **train** rows for P-by-K training and verification val/test for unseen-identity dev/test. It reads the logical splits from the manifests, so a physical `val/` directory is unnecessary. The tables above describe the November 1 subset; regenerated counts follow the current DuckDB catalog. The separate on-disk `test/` images are not added unless they are included in the source protocol. The older `load_face_protocol` remains available when reproducing a completed bbox-based run.
+
+For the RTX 3070 Ti 8 GB / 32 GB RAM profile, B0/B1 use iResNet-34 with a 128-dimensional output. Four CPU workers stream complete existing images as uint8 batches. Augmentation and normalization run on CUDA after transfer. The standard ArcFace B1 profile uses batch 128, and the Triplet B0 notebook can adjust its batch through a GPU memory pilot. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for preparation commands.
 
 ```bash
 python -m src.recognition.classification.train --config configs/recognition/model_a.yaml

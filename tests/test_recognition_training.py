@@ -44,8 +44,19 @@ def load_checkpoint(path):
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
+def test_arcface_standard_profile():
+    config = ExperimentConfig.arcface()
+    trainer_config = config.trainer_config(config.seed)
+    assert config.method == "arcface"
+    assert (config.embedding_dim, config.batch_size) == (128, 128)
+    assert (config.num_workers, config.evaluation_num_workers) == (4, 2)
+    assert trainer_config.amp and trainer_config.amp_dtype == "bf16"
+    assert config.channels_last and config.fused_adamw
+    assert ExperimentConfig(**config.to_dict()).to_dict() == config.to_dict()
+
+
 class TinyEncoder(nn.Module):
-    def __init__(self, embedding_dim=256):
+    def __init__(self, embedding_dim=128):
         super().__init__()
         self.dropout = nn.Dropout(0.1)
         self.fc = nn.Linear(3, embedding_dim)
@@ -75,12 +86,15 @@ def experiment(tmp_path, monkeypatch):
         impostor_per_identity_pair=4,
         probe_per_identity=2,
     )
+    for frame in (prepared.train, prepared.dev, prepared.test):
+        frame[["x1", "y1", "x2", "y2"]] = [2, 2, 16, 14]
     config = ExperimentConfig(
         data_root=root,
         artifacts_root=tmp_path / "baseline",
         device="cpu",
         amp=False,
         num_workers=0,
+        evaluation_num_workers=0,
         epochs=2,
         warmup_epochs=0,
         minimum_epochs=2,
@@ -172,9 +186,9 @@ def test_fixed_margin_experiment_calibrates_dev_and_freezes_test_thresholds(
     assert export["format_version"] == 1
     assert export["checkpoint_kind"] == "inference"
     assert export["task"] and all(key.startswith("model.") for key in export["task"])
-    assert export["metadata"]["embedding_dim"] == 256
+    assert export["metadata"]["embedding_dim"] == 128
     assert export["val_metrics"]["dev_threshold"] == run.threshold
-    assert export["training_config"]["patience"] == 3
+    assert export["training_config"]["patience"] == 10
     assert (
         export["metadata"]["environment_compatibility"]
         == training.environment_compatibility()
@@ -248,7 +262,7 @@ def test_metric_runs_use_shared_training_and_inference_checkpoint_schema(
         {key.removeprefix("model."): value for key, value in export["task"].items()}
     )
     embeddings = restored(torch.zeros(2, 3, 16, 20))
-    assert embeddings.shape == (2, 256)
+    assert embeddings.shape == (2, 128)
     torch.testing.assert_close(embeddings.norm(dim=1), torch.ones(2))
 
 

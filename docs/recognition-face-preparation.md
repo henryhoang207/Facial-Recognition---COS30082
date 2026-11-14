@@ -2,7 +2,7 @@
 
 This command runs YuNet on the local VGGFace2 subset and publishes a separate recognition protocol with face bboxes. It does not download the full VGGFace2 image dataset, edit source images, or replace the original manifests.
 
-The pretrained detector is a preprocessing tool. Recognition A and C retain their configured random initialization. Generated boxes are automatic detections, not human-verified identity annotations.
+The pretrained detector is a preprocessing tool. Recognition A and C retain their configured random initialization. Generated boxes are automatic detections, not human-verified identity annotations. This standalone workflow is optional for B0/B1: their default pipeline uses the existing tightly cropped 112x112 source images and base manifests without additional detection or bbox cropping.
 
 ## Run detection
 
@@ -118,6 +118,8 @@ This reuses detector results and publishes a new protocol generation. Invalid, d
 ## Use the selected protocol for training
 
 Recognition A/C configurations select a generation through `data.manifest`, `verification.pairs`, and `verification.bbox_manifest`. `data.root` and `verification.root` continue to point at the original VGGFace2 image directory. Update all three manifest paths together when changing generations.
+
+B0/B1 identification defaults to `load_image_protocol` on the base `data/manifests/` directory. The compatibility setting `ExperimentConfig.face_protocol` names that directory, and `require_bboxes=False` selects complete source images. Only classification train rows enter P-by-K training; verification val/test remain unseen dev/test. Images are decoded on demand, with no full-dataset image cache in RAM or VRAM; training augmentation runs on each CUDA batch. The default embedding dimension is 128. To reproduce an older bbox-based experiment, `load_face_protocol` still accepts a completed generation directory or `current.json`, and `require_bboxes=True` enforces bbox coverage. Changing between these preprocessing contracts requires a fresh run and calibration.
 
 Classification reads bboxes from its CSV. Verification requires bbox coverage for every image used in its pairs and applies the same shared square-crop function. GPU caches store those resulting crops. The verification catalog checksum is recorded in calibration reports and training metadata; changing bboxes invalidates an old calibration or incompatible resume.
 

@@ -35,6 +35,7 @@ MANIFEST_VERSION = 1
 IMAGE_COLUMNS = ["rel_path", "identity_id", "label", "split", "sha256"]
 PAIR_COLUMNS = ["path_a", "path_b", "is_same", "identity_a", "identity_b"]
 TRIPLET_COLUMNS = ["anchor", "positive", "negative"]
+BBOX_COLUMNS = ["x1", "y1", "x2", "y2"]
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _ARTIFACTS = [
     "train.csv",
@@ -557,6 +558,27 @@ def prepare_manifests(
     )
 
 
+def bbox_array(frame: pd.DataFrame, *, required: bool = False) -> np.ndarray | None:
+    """Validate complete original-image boxes before workers start decoding."""
+    present = set(BBOX_COLUMNS).intersection(frame.columns)
+    if not present and not required:
+        return None
+    if present != set(BBOX_COLUMNS):
+        raise ValueError("Face bboxes require x1, y1, x2, y2 for every image.")
+    boxes = frame[BBOX_COLUMNS].to_numpy(dtype=np.float64)
+    if (
+        not np.isfinite(boxes).all()
+        or (boxes < 0).any()
+        or (boxes > np.iinfo(np.int32).max).any()
+        or not np.equal(boxes, np.floor(boxes)).all()
+        or (boxes[:, 2:] <= boxes[:, :2]).any()
+    ):
+        raise ValueError(
+            "Face bboxes must be finite positive-area integer coordinates."
+        )
+    return boxes.astype(np.int32)
+
+
 class FaceDataset(Dataset):
     """Decode/crop RGB faces on CPU with per-draw augmentation parameters.
 
@@ -568,17 +590,26 @@ class FaceDataset(Dataset):
     """
 
     def __init__(
-        self, frame: pd.DataFrame, data_root: Path, train: bool = False, seed: int = 42
+        self,
+        frame: pd.DataFrame,
+        data_root: Path,
+        train: bool = False,
+        seed: int = 42,
+        require_bboxes: bool = False,
     ):
         required = {"rel_path", "identity_id", "label"}
         if not required.issubset(frame.columns):
             raise ValueError(f"FaceDataset requires columns {sorted(required)}.")
-        self.frame = frame.reset_index(drop=True).copy()
         self.data_root = Path(data_root).resolve(strict=True)
         self.train, self.seed = bool(train), int(seed)
-        self.rel_paths = self.frame.rel_path.astype(str).tolist()
-        self.identity_ids = self.frame.identity_id.astype(str).tolist()
-        self.labels = self.frame.label.to_numpy(dtype=np.int64)
+        # Windows spawn copies worker state. Keep compact metadata arrays only;
+        # do not copy a full DataFrame or retain any decoded image cache.
+        self.rel_paths = np.asarray(frame.rel_path, dtype=str)
+        codes, identities = pd.factorize(frame.identity_id.astype(str), sort=True)
+        self.identity_codes = codes.astype(np.int32)
+        self.identity_names = np.asarray(identities, dtype=str)
+        self.labels = frame.label.to_numpy(dtype=np.int64, copy=True)
+        self.boxes = bbox_array(frame, required=require_bboxes)
 
     def __len__(self) -> int:
         return len(self.rel_paths)
@@ -590,13 +621,20 @@ class FaceDataset(Dataset):
         else:
             index = int(token)
             draw_seed = _derived_seed(self.seed, f"image-{index}")
-        relative = self.rel_paths[index]
+        relative = str(self.rel_paths[index])
         path = _safe_path(self.data_root, relative)
         with Image.open(path) as image:
             rgb = np.asarray(image.convert("RGB"))
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         height, width = bgr.shape[:2]
-        cropped = crop_face(bgr, (0, 0, width, height), size=112, scale=1.0)
+        box = (
+            tuple(int(value) for value in self.boxes[index])
+            if self.boxes is not None
+            else (0, 0, width, height)
+        )
+        if box[2] > width or box[3] > height:
+            raise ValueError(f"Face bbox lies outside the original image: {relative}")
+        cropped = crop_face(bgr, box, size=112, scale=1.0)
         rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
         values = np.ascontiguousarray(rgb.transpose(2, 0, 1))
         tensor = torch.from_numpy(values)
@@ -604,7 +642,7 @@ class FaceDataset(Dataset):
             "image": tensor if self.train else tensor.float().div_(127.5).sub_(1),
             "label": int(self.labels[index]),
             "rel_path": relative,
-            "identity_id": self.identity_ids[index],
+            "identity_id": str(self.identity_names[self.identity_codes[index]]),
         }
         if self.train:
             rng = random.Random(draw_seed)
@@ -703,29 +741,39 @@ def make_loader(
     num_workers: int | None = None,
     notebook: bool = False,
     seed: int = 42,
+    prefetch_factor: int = 2,
+    pin_memory: bool = True,
+    persistent_workers: bool = True,
+    require_bboxes: bool = False,
 ) -> DataLoader:
-    """Decode CPU crops with 20 spawn workers unless explicitly overridden.
+    """Stream CPU crops with four spawn workers and a bounded prefetch queue.
 
     Scripts using workers must call this under a main guard (and may call
     ``multiprocessing.freeze_support()``). No live database connection is retained.
     Notebook workers import this module; ``notebook`` no longer disables them.
     """
     del notebook
-    workers = 20 if num_workers is None else int(num_workers)
+    workers = 4 if num_workers is None else int(num_workers)
     if workers < 0:
         raise ValueError("num_workers must be nonnegative.")
+    if prefetch_factor < 1:
+        raise ValueError("prefetch_factor must be positive.")
     if train and batch_sampler is None:
         raise ValueError("Training requires an explicit PKBatchSampler.")
     arguments = {
-        "dataset": FaceDataset(frame, data_root, train=train, seed=seed),
+        "dataset": FaceDataset(
+            frame, data_root, train=train, seed=seed, require_bboxes=require_bboxes
+        ),
         "num_workers": workers,
-        "pin_memory": torch.cuda.is_available(),
+        "pin_memory": pin_memory and torch.cuda.is_available(),
         "worker_init_fn": seed_worker,
         "generator": torch.Generator().manual_seed(int(seed)),
     }
     if workers:
         arguments.update(
-            persistent_workers=True, prefetch_factor=2, multiprocessing_context="spawn"
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
+            multiprocessing_context="spawn",
         )
     if batch_sampler is not None:
         arguments["batch_sampler"] = batch_sampler

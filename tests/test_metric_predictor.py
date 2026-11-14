@@ -127,6 +127,20 @@ def test_training_checkpoint_requires_explicit_internal_opt_in(
     assert payload["checkpoint_kind"] == "training"
 
 
+def test_128_dimensional_checkpoint_round_trip(tmp_path, common_payload):
+    common_payload["metadata"]["embedding_dim"] = 128
+    common_payload["metadata"]["experiment_config"]["embedding_dim"] = 128
+    common_payload["task"] = {
+        f"model.{name}": value for name, value in TinyEncoder(128).state_dict().items()
+    }
+    checkpoint = tmp_path / "embedding128.pt"
+    torch.save(common_payload, checkpoint)
+    embedder = predictor.MetricEmbedder(checkpoint)
+    vector = embedder.embed(np.zeros((112, 112, 3), dtype=np.uint8))
+    assert vector.shape == (128,)
+    assert np.linalg.norm(vector) == pytest.approx(1, abs=1e-5)
+
+
 def test_encoder_only_export_matches_dataset_normalization(tmp_path, common_payload):
     common_payload["task"].pop("_extra_state")
     checkpoint = tmp_path / "embedding.pt"

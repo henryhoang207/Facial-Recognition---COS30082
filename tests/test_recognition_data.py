@@ -234,6 +234,16 @@ def test_rgb_square_crop_preserves_channels_and_black_padding(tmp_path):
     assert torch.equal(sample["image"][:, 0, 56], torch.full((3,), -1.0))
 
 
+def test_full_112_image_preserves_every_pixel_without_bbox(tmp_path):
+    path = tmp_path / "train/person/face.png"
+    path.parent.mkdir(parents=True)
+    pixels = np.random.default_rng(42).integers(0, 256, (112, 112, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(path)
+    dataset = data.FaceDataset(face_frame(), tmp_path, train=True)
+    assert dataset.boxes is None
+    assert np.array_equal(dataset[0]["image"].permute(1, 2, 0).numpy(), pixels)
+
+
 def test_draw_token_augmentation_is_local_and_reproducible(tmp_path):
     path = tmp_path / "train/person/face.png"
     path.parent.mkdir(parents=True)
@@ -318,7 +328,7 @@ def test_pk_invalid_small_batches_fail_clearly(labels, P, K):
         data.PKBatchSampler(labels, P=P, K=K)
 
 
-def test_notebook_loader_defaults_to_20_cpu_workers_and_allows_smoke_override(
+def test_notebook_loader_defaults_to_four_cpu_workers_and_allows_smoke_override(
     tiny_faces,
 ):
     root, output = tiny_faces
@@ -327,7 +337,7 @@ def test_notebook_loader_defaults_to_20_cpu_workers_and_allows_smoke_override(
     loader = data.make_loader(
         prepared.train, root, train=True, batch_sampler=sampler, notebook=True
     )
-    assert loader.num_workers == 20 and loader.persistent_workers
+    assert loader.num_workers == 4 and loader.persistent_workers
     assert loader.multiprocessing_context.get_start_method() == "spawn"
     loader = data.make_loader(
         prepared.train,

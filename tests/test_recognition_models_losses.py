@@ -43,7 +43,7 @@ def test_metric_task_augments_raw_crops_before_encoder_forward(method):
     class Encoder(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.projection = torch.nn.Linear(3, 256)
+            self.projection = torch.nn.Linear(3, 128)
             self.seen_images = None
 
         def forward(self, images):
@@ -235,7 +235,7 @@ def test_iresnet34_normalization_fp32_head_and_backbone_gradient():
     previous_threads = torch.get_num_threads()
     torch.set_num_threads(min(previous_threads, 2))
     try:
-        model = IResNet34(embedding_dim=256, dropout=0.0)
+        model = IResNet34(dropout=0.0)
         assert [
             len(model.layer1),
             len(model.layer2),
@@ -245,10 +245,10 @@ def test_iresnet34_normalization_fp32_head_and_backbone_gradient():
         assert model.fc.in_features == 512 * 7 * 7
         assert model.features.affine and not model.features.weight.requires_grad
         assert model.features.bias.requires_grad
-        assert torch.equal(model.features.weight, torch.ones(256))
+        assert torch.equal(model.features.weight, torch.ones(128))
         images = torch.randn(2, 3, 112, 112)
         output = model(images)
-        assert output.shape == (2, 256) and output.dtype == torch.float32
+        assert output.shape == (2, 128) and output.dtype == torch.float32
         assert torch.allclose(output.norm(dim=1), torch.ones(2), atol=1e-5)
         (output * torch.randn_like(output)).sum().backward()
         assert model.conv1.weight.grad is not None
