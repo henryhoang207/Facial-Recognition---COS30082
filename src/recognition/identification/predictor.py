@@ -43,13 +43,15 @@ def _validate_payload(payload: object, *, allow_training: bool) -> dict:
     method = metadata.get("method")
     margin = metadata.get("margin")
     class_count = metadata.get("class_count")
+    embedding_dim = metadata.get("embedding_dim")
     if (
         not isinstance(method, str)
         or method not in {"triplet", "arcface"}
         or not isinstance(experiment, Mapping)
         or experiment.get("method") != method
-        or metadata.get("embedding_dim") != 256
-        or experiment.get("embedding_dim") != 256
+        or type(embedding_dim) is not int
+        or embedding_dim not in (128, 256)
+        or experiment.get("embedding_dim") != embedding_dim
         or not isinstance(class_count, int)
         or class_count < 2
         or not isinstance(margin, (float, int))
@@ -102,7 +104,7 @@ def load_metric_encoder(
     }
     # Constructing a model for inference must not consume the caller's RNG.
     with torch.random.fork_rng(devices=[]):
-        model = IResNet34(embedding_dim=256)
+        model = IResNet34(embedding_dim=payload["metadata"]["embedding_dim"])
     try:
         model.load_state_dict(state, strict=True)
     except (RuntimeError, TypeError) as exc:
@@ -137,8 +139,13 @@ class MetricEmbedder:
         rgb = face[:, :, ::-1].astype(np.float32).transpose(2, 0, 1)
         tensor = torch.from_numpy(np.ascontiguousarray(rgb / 127.5 - 1.0))
         output = self.encoder(tensor.unsqueeze(0).to(self.device))
-        if not isinstance(output, torch.Tensor) or output.shape != (1, 256):
-            raise ValueError("model must return one 256-dimensional embedding")
+        if not isinstance(output, torch.Tensor) or output.shape != (
+            1,
+            self.embedding_dim,
+        ):
+            raise ValueError(
+                f"model must return one {self.embedding_dim}-dimensional embedding"
+            )
         vector = output[0].float().cpu().numpy()
         if not np.isfinite(vector).all() or not np.isclose(
             np.linalg.norm(vector), 1, atol=1e-5

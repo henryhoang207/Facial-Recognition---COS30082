@@ -101,12 +101,15 @@ def build_embedder(config: AppConfig, spec: ModelSpec) -> tuple[Any, float]:
         threshold = metrics.get("val_score_threshold", DEFAULT_RECOGNITION_THRESHOLD)
         return embedder, float(threshold)
     if spec.type == "metric":
-        # MetricEmbedder nằm trên branch merge-main; import muộn để main vẫn chạy
         from src.recognition.identification.predictor import MetricEmbedder
 
         embedder = MetricEmbedder(path, device=config.device)
-        metrics = embedder.payload.get("dev_metrics") or {}
-        return embedder, float(metrics.get("threshold", DEFAULT_RECOGNITION_THRESHOLD))
+        metrics = embedder.payload.get("val_metrics") or {}
+        legacy = embedder.payload.get("dev_metrics") or {}
+        threshold = metrics.get(
+            "dev_threshold", legacy.get("threshold", DEFAULT_RECOGNITION_THRESHOLD)
+        )
+        return embedder, float(threshold)
     raise ValueError(f"unknown embedder type {spec.type!r}")
 
 
