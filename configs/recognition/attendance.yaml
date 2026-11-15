@@ -1,0 +1,33 @@
+root: ../../data/VGGFace2
+catalog: ../../data/manifests/vggface2_full/vggface2_verification.csv
+selection_pairs: ../../data/manifests/vggface2_full/verification_pairs_val.csv
+encoder_checkpoint: ../../runs/recognition/recognition_a_20261112T233957440102Z_54b5713b/best.pt
+dataset_dir: ../../data/manifests/attendance_vggface2
+output_dir: ../../runs/attendance
+frame_count: 5
+gallery_size: 6
+enrollment_count: 3
+windows_per_identity: 12
+dev_fraction: 0.25
+embedding_batch_size: 128
+embedding_workers: 4
+embedding_device: auto
+hidden_dim: 16
+target_false_accept: 0.01
+minimum_consensus: 0.8
+training:
+  epochs: 35
+  batch_size: 128
+  lr: 0.002
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: cosine
+  seed: 42
+  device: cpu
+  amp: false
+  deterministic: true
+  num_workers: 0
+  monitor: val_loss
+  mode: min
+  patience: 5
+  progress: true
