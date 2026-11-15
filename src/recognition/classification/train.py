@@ -1,6 +1,7 @@
-"""Train A/C without changing another recognition owner's modules."""
+"""Train Model A using the shared trainer."""
 
 import gc
+import hashlib
 import importlib
 import json
 import shutil
@@ -20,7 +21,7 @@ from src.training import (
 from src.training.config import resolve_device
 
 from .cache import cache_loaders
-from .config import RecognitionConfig, load_config
+from .config import ModelConfig, RecognitionConfig, load_config
 from .data import make_loaders
 from .models import ClassificationModel
 from .task import RecognitionTask
@@ -38,19 +39,7 @@ def build_evaluator(config: RecognitionConfig):
         }
         if config.training.early_stopping_monitor is not None:
             required.add(config.training.early_stopping_monitor.metric)
-        available = {"val_loss", "val_accuracy"}
-        if config.model.variant == "c":
-            available.update(
-                {
-                    "val_classification_loss",
-                    "val_no_margin_loss",
-                    "val_prototype_mean_norm",
-                    "val_target_cosine",
-                    "val_fallback_fraction",
-                    "arcface_margin",
-                }
-            )
-        if required - available:
+        if required - {"val_loss", "val_accuracy"}:
             raise ValueError("custom monitor requires --evaluator module:factory")
         return None
     module, separator, attribute = config.evaluator.partition(":")
@@ -97,6 +86,16 @@ def train(config: RecognitionConfig, *, resume: Path | None = None):
 
 
 def _train_once(config, resume, directory, pipeline, *, cache_allowed):
+    model_metadata = config.model.model_dump(mode="json")
+    legacy_splits = False
+    if resume is not None:
+        saved = torch.load(resume, map_location="cpu", weights_only=True, mmap=True)
+        previous = saved["metadata"]["model_config"]
+        if ModelConfig.from_checkpoint(previous) != config.model:
+            raise ValueError("incompatible resume model configuration")
+        model_metadata = previous
+        legacy_splits = "splits" in saved["metadata"]
+        del saved
     evaluator = build_evaluator(config)
     seed_everything(config.training.seed, config.training.deterministic)
     train_loader, val_loader, mapping = make_loaders(config)
@@ -109,8 +108,7 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
     optimizer = make_optimizer(task, config.training)
     metadata = {
         "task": "recognition_classification",
-        # Omit newly added default controls so legacy default-policy resumes match.
-        "model_config": config.model.model_dump(mode="json", exclude_defaults=True),
+        "model_config": model_metadata,
         "preprocess_config": config.preprocess.model_dump(mode="json"),
         "data_config": config.data.model_dump(mode="json"),
         "class_to_idx": mapping,
@@ -128,7 +126,14 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
             if isinstance(evaluator, TrainingVerificationEvaluator)
             else None
         ),
-        "splits": {
+    }
+    if config.data.manifest is not None and not legacy_splits:
+        with config.data.manifest.open("rb") as stream:
+            metadata["classification_manifest_sha256"] = hashlib.file_digest(
+                stream, "sha256"
+            ).hexdigest()
+    else:
+        metadata["splits"] = {
             name: [
                 {
                     "path": str(record.path),
@@ -141,8 +146,7 @@ def _train_once(config, resume, directory, pipeline, *, cache_allowed):
                 for record in loader.dataset.records
             ]
             for name, loader in (("train", train_loader), ("val", val_loader))
-        },
-    }
+        }
     trainer = Trainer(
         task,
         optimizer,

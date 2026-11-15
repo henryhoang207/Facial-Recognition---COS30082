@@ -1,6 +1,6 @@
 root: ../../data/VGGFace2
-classification: ../../data/manifests/vggface2_classification.csv
-verification: ../../data/manifests/vggface2_verification.csv
+classification: ../../data/manifests/vggface2_full/vggface2_classification.csv
+verification: ../../data/manifests/vggface2_full/vggface2_verification.csv
 output_dir: ../../data/manifests/recognition_faces
 overrides: null
 seed: 42

@@ -11,7 +11,7 @@ from .catalog import FingerprintCache, holdout, stable_rng, write_csv, write_jso
 from .config import PreparationConfig
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RecognitionImage:
     path: str
     identity: str
@@ -109,83 +109,89 @@ class RecognitionPreparer:
         unseen_ids = {row[1] for row in catalog if row[2] == "val"}
         if train_ids & unseen_ids:
             raise ValueError("source VGGFace2 identities overlap between train and val")
-        paths = [source.root / row[0] for row in catalog]
-        fingerprints = FingerprintCache(config.output_dir).inspect(
+        source_count = len(catalog)
+        print(f"fingerprints: validating {source_count} images", flush=True)
+        paths = (source.root / row[0] for row in catalog)
+        fingerprints = FingerprintCache(config.output_dir).iter_inspect(
             paths, config.workers
         )
-        hash_identities = defaultdict(set)
-        for row, path in zip(catalog, paths, strict=True):
-            entry = fingerprints[str(path)]
-            if not entry["error"]:
-                hash_identities[entry["sha256"]].add(row[1])
-        conflicting = {
-            digest
-            for digest, identities in hash_identities.items()
-            if len(identities) > 1
-        }
-        images, rejected = [], []
-        for row, path in zip(catalog, paths, strict=True):
+        hash_owner, conflicting = {}, set()
+        by_identity = defaultdict(list)
+        rejected = []
+        dimensions = Counter()
+        for row, entry in zip(catalog, fingerprints, strict=True):
             relative, identity, split, index = row
-            entry = fingerprints[str(path)]
-            reason = entry["error"] or (
-                "identical_bytes_have_conflicting_identities"
-                if entry["sha256"] in conflicting
-                else ""
-            )
-            if reason:
+            if entry["error"]:
                 rejected.append(
-                    {"path": relative, "identity": identity, "reason": reason}
+                    {"path": relative, "identity": identity, "reason": entry["error"]}
                 )
             else:
-                images.append(
+                sha = entry["sha256"]
+                if hash_owner.setdefault(sha, identity) != identity:
+                    conflicting.add(sha)
+                dimensions[f"{entry['width']}x{entry['height']}"] += 1
+                by_identity[identity].append(
                     RecognitionImage(relative, identity, split, index, entry["sha256"])
                 )
+        del catalog, paths, fingerprints, hash_owner
+        if conflicting:
+            for identity, images in by_identity.items():
+                retained = []
+                for image in images:
+                    if image.sha256 in conflicting:
+                        rejected.append(
+                            {
+                                "path": image.path,
+                                "identity": identity,
+                                "reason": "identical_bytes_have_conflicting_identities",
+                            }
+                        )
+                    else:
+                        retained.append(image)
+                by_identity[identity] = retained
         mapping = {identity: index for index, identity in enumerate(sorted(train_ids))}
-        by_identity = defaultdict(list)
-        for image in images:
-            by_identity[image.identity].append(image)
-        rows = []
-        split_hashes = defaultdict(set)
-        for identity in sorted(train_ids):
-            groups = classification_groups(by_identity[identity])
-            if len(groups) < 3:
-                raise ValueError(
-                    f"identity {identity} has fewer than three independent image groups"
-                )
-            rng = stable_rng(config.seed, f"classification:{identity}")
-            rng.shuffle(groups)
-            n_val = max(1, round(len(groups) * source.val_fraction))
-            n_test = max(1, round(len(groups) * source.test_fraction))
-            if n_val + n_test >= len(groups):
-                raise ValueError(
-                    f"split fractions leave no training groups for {identity}"
-                )
-            for group_index, group in enumerate(groups):
-                split = (
-                    "val"
-                    if group_index < n_val
-                    else "test" if group_index < n_val + n_test else "train"
-                )
-                for image in group:
-                    rows.append(
-                        {
-                            "path": image.path,
-                            "identity": identity,
-                            "label": mapping[identity],
-                            "split": split,
-                            "session": "",
-                            "source_split": image.source_split,
-                            "source_identity_idx": image.source_index,
-                            "sha256": image.sha256,
-                            "group": f"{identity}:{min(item.path for item in group)}",
-                        }
+        split_counts = Counter()
+
+        def classification_rows():
+            for identity in sorted(train_ids):
+                groups = classification_groups(by_identity[identity])
+                if len(groups) < 3:
+                    raise ValueError(
+                        f"identity {identity} has fewer than three independent groups"
                     )
-                    split_hashes[split].add(image.sha256)
-        if any(
-            split_hashes[first] & split_hashes[second]
-            for first, second in (("train", "val"), ("train", "test"), ("val", "test"))
-        ):
-            raise ValueError("classification exact duplicates leaked across splits")
+                rng = stable_rng(config.seed, f"classification:{identity}")
+                rng.shuffle(groups)
+                n_val = max(1, round(len(groups) * source.val_fraction))
+                n_test = max(1, round(len(groups) * source.test_fraction))
+                if n_val + n_test >= len(groups):
+                    raise ValueError(
+                        f"split fractions leave no training groups for {identity}"
+                    )
+                rows = []
+                for group_index, group in enumerate(groups):
+                    split = (
+                        "val"
+                        if group_index < n_val
+                        else "test" if group_index < n_val + n_test else "train"
+                    )
+                    group_name = f"{identity}:{min(item.path for item in group)}"
+                    for image in group:
+                        rows.append(
+                            {
+                                "path": image.path,
+                                "identity": identity,
+                                "label": mapping[identity],
+                                "split": split,
+                                "session": "",
+                                "source_split": image.source_split,
+                                "source_identity_idx": image.source_index,
+                                "sha256": image.sha256,
+                                "group": group_name,
+                            }
+                        )
+                    split_counts[split] += len(group)
+                yield from sorted(rows, key=lambda row: row["path"])
+
         verification_test_ids, verification_val_ids = holdout(
             sorted(unseen_ids),
             source.verification_val_fraction,
@@ -228,10 +234,9 @@ class RecognitionPreparer:
                 }
                 for image in sorted(selected, key=lambda image: image.path)
             )
-        rows.sort(key=lambda row: row["path"])
         write_csv(
             config.output_dir / "vggface2_classification.csv",
-            rows,
+            classification_rows(),
             [
                 "path",
                 "identity",
@@ -252,14 +257,22 @@ class RecognitionPreparer:
         )
         write_csv(
             config.output_dir / "vggface2_rejected.csv",
-            rejected,
+            sorted(rejected, key=lambda row: row["path"]),
             ["path", "identity", "reason"],
         )
         summary = {
-            "source_images": len(catalog),
-            "classification_images": len(rows),
+            "source_images": source_count,
+            "verified_image_dimensions": dict(dimensions),
+            "classification_images": sum(split_counts.values()),
             "classification_classes": len(mapping),
-            "classification_splits": dict(Counter(row["split"] for row in rows)),
+            "classification_splits": dict(split_counts),
+            "verification_images": len(verification_catalog),
+            "verification_duplicate_rows": (
+                source_count
+                - sum(split_counts.values())
+                - len(verification_catalog)
+                - len(rejected)
+            ),
             "verification": pair_counts,
             "rejected_images": len(rejected),
             "conflicting_hashes": len(conflicting),

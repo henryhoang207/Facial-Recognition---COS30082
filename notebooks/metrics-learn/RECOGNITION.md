@@ -4,7 +4,7 @@ Use [triplet_loss.ipynb](triplet_loss.ipynb) for B0 and [arcface.ipynb](arcface.
 
 The notebook implementation lives in `src/recognition/identification/`. Import configuration, data preparation, models, losses, training, and notebook helpers from `src.recognition.identification`. Batched embedding metrics live in `src.recognition.identification.embedding_evaluation`; `src.recognition.verification.evaluator` provides the separate shared `embed(face)` pair-evaluation API. See the [package map](../../src/recognition/README.md) for the complete module layout.
 
-The A/C classification package uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the fixed-setting notebook protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
+Model A uses a ResNet-18 encoder and its own data and configuration. B0/B1 retain iResNet-34, P-by-K sampling, identity-disjoint development data, and the fixed-setting notebook protocol. Both packages now use `src.training.Trainer.fit`, the `TrainingTask` interface, and the same version-1 checkpoint envelope. `MetricLearningTask` owns the B0/B1 backbone, objective, optional ArcFace head, and mining state. `ExperimentConfig` stays separate and adapts shared engine settings with `trainer_config(seed)`. Experiment-specific scheduling, selection, and stopping use the shared `TrainingPolicy` hooks.
 
 From the repository root in PowerShell:
 
@@ -42,7 +42,7 @@ The runner writes its status, logs, checkpoints, and final report below the sele
 
 The current VGGFace2 source already contains tightly cropped 112x112 images. CPU workers decode the complete RGB frame and pad or resize it when needed. Pinned uint8 batches move to CUDA for augmentation and normalization before iResNet-34 produces a 128-D unit embedding. The four-worker prefetch queue holds up to eight batches, roughly 37 MiB of uint8 image pixels at batch 128 before worker metadata, active tensors, and model memory.
 
-Switching from the bbox protocol to complete existing images requires a fresh training run; the default artifact root is separate from earlier bbox and 256-D runs. Inference still reads existing compatible 128-D or 256-D checkpoint dimensions from metadata. The backbone stages [3,4,6,3] and loss implementations remain the same. The optional `load_face_protocol` adapter remains available for previous completed bbox generations; A/C can continue using the standalone YuNet preparation workflow.
+Switching from the bbox protocol to complete existing images requires a fresh training run; the default artifact root is separate from earlier bbox and 256-D runs. Inference still reads existing compatible 128-D or 256-D checkpoint dimensions from metadata. The backbone stages [3,4,6,3] and loss implementations remain the same. The optional `load_face_protocol` adapter remains available for previous completed bbox generations. Model A can select the standalone YuNet preparation workflow through its configuration.
 
 Outputs are organized as follows:
 
@@ -91,7 +91,7 @@ embedder = MetricEmbedder("/absolute/path/to/weights/embedding.pt", device="cpu"
 vector = embedder.embed(face)  # BGR uint8 shared crop, shape (112, 112, 3).
 ```
 
-The output is a normalized 128-dimensional NumPy float32 vector. In a shared verification YAML model entry, set `factory: src.recognition.identification.predictor:MetricEmbedder`, `size: 112`, and `crop_scale: 1.0`. The adapter accepts metric `best.pt` and `embedding.pt` inference checkpoints and ignores any loss head in the selected task snapshot. The common checkpoint schema does not make A/C and B0/B1 encoder weights interchangeable.
+The output is a normalized 128-dimensional NumPy float32 vector. In a shared verification YAML model entry, set `factory: src.recognition.identification.predictor:MetricEmbedder`, `size: 112`, and `crop_scale: 1.0`. The adapter accepts metric `best.pt` and `embedding.pt` inference checkpoints and ignores any loss head in the selected task snapshot. The common checkpoint schema does not make Model A and B0/B1 encoder weights interchangeable.
 
 To verify the entire notebook flow with a tiny real-image subset:
 

@@ -10,7 +10,7 @@ from tqdm.auto import tqdm
 
 from src.training.config import resolve_device
 
-from .config import RecognitionConfig
+from .config import ModelConfig, RecognitionConfig
 from .data import FaceDataset, read_records
 from .predictor import load_task
 
@@ -31,7 +31,7 @@ def evaluate(
     metadata = payload["metadata"]
     config = RecognitionConfig.model_validate(
         {
-            "model": metadata["model_config"],
+            "model": ModelConfig.from_checkpoint(metadata["model_config"]),
             "preprocess": metadata["preprocess_config"],
             "data": metadata["data_config"],
             "training": payload["training_config"],
@@ -60,7 +60,7 @@ def evaluate(
     )
     correct, count = 0, 0
     for images, labels in tqdm(loader, desc=f"classification {split}"):
-        _, logits = task.model(images.to(target_device))
+        logits = task.model(images.to(target_device))
         correct += (logits.argmax(1).cpu() == labels).sum().item()
         count += len(labels)
     return {"split": split, "images": count, "accuracy": correct / count}

@@ -1,0 +1,48 @@
+# FaceGuard web app config. Relative paths are resolved from the repo root.
+# Đổi model = đổi `type` / `path` ở đây, không sửa code.
+
+device: cpu
+
+models:
+  detector:
+    type: yunet            # yunet | haar | center (center chỉ dùng cho test)
+    path: app/weights/face_detection_yunet_2023mar.onnx
+    url: https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+    sha256: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+    score_threshold: 0.8
+  liveness:
+    type: liveness         # liveness | dummy
+    path: model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
+  embedder:
+    type: recognition      # recognition (Model A/C) | metric | dummy
+    path: model/Classification/Model_A.pt
+  emotion:
+    type: emotion_gru      # emotion_gru | dummy
+    path: model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+
+thresholds:
+  recognition: null        # null = val_score_threshold trong checkpoint embedder
+  liveness: null           # null = threshold trong checkpoint liveness
+
+pipeline:
+  max_faces: 5
+  smooth_window: 8         # số frame để làm mượt nhãn
+  stable_frames: 5         # số frame liên tiếp live + cùng tên trước khi điểm danh
+  track_iou: 0.3
+  track_ttl_frames: 10     # track mất quá số frame này thì xoá
+  spoof_cooldown_s: 5.0    # mỗi track ghi spoof_events tối đa 1 lần / khoảng này
+  model_every_n: 1         # tăng lên 2-3 nếu máy chậm
+
+registration:
+  frames: 10
+  min_valid_frames: 6
+  min_face_pixels: 80
+  duplicate_check: true
+
+storage:
+  db: app/instance/faceguard.db
+  faces_dir: app/instance/faces
+  spoof_dir: app/instance/spoof
+  settings_override: app/instance/settings.json
+
+features: {}

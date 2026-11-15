@@ -4,7 +4,7 @@ The package keeps the existing classification, verification, and preprocessing w
 
 | Package | Models and workflow |
 | --- | --- |
-| `classification/` | ResNet-18 A/C, classification training through `src/training/`, YAML CLI configuration, and the app embedder |
+| `classification/` | ResNet-18 Model A, classification training through `src/training/`, YAML CLI configuration, and the app embedder |
 | `identification/` | iResNet-34 B0/B1 fixed-setting notebook runs through the shared trainer, normalized 128-dimensional embeddings, and identity-disjoint evaluation |
 | `verification/` | Shared pair-evaluation API and exported-model comparison CLI |
 | `preprocessing/` | Offline, resumable face detection and recognition manifest preparation |
@@ -13,14 +13,14 @@ The package keeps the existing classification, verification, and preprocessing w
 
 | Module | Responsibility |
 | --- | --- |
-| `classification/config.py` | A/C YAML configuration and validation |
+| `classification/config.py` | Model A YAML configuration and validation |
 | `classification/data.py` | Classification manifests and folder adapters |
-| `classification/models.py` | ResNet-18 encoder, projection, and A/C heads |
+| `classification/models.py` | ResNet-18 encoder, projection, and classifier head |
 | `classification/task.py` | Shared-trainer task adapter |
-| `classification/train.py` | A/C training CLI |
+| `classification/train.py` | Model A training CLI |
 | `classification/evaluate.py` | Held-out classification evaluation CLI |
 | `classification/predictor.py` | Exported-checkpoint `RecognitionEmbedder` |
-| `classification/verification.py` | Verification callback used during A/C training |
+| `classification/verification.py` | Verification callback used during Model A training |
 
 ## Identification and metric-learning modules
 
@@ -47,9 +47,9 @@ from src.recognition.identification.training import run_experiment
 
 `classification/evaluate.py`, `verification/evaluator.py`, and `identification/embedding_evaluation.py` have separate contracts: classification scores over known classes, pair scoring through an embedder, and batched notebook evaluation on unseen identities. They remain separate modules within their owning packages.
 
-Classification and identification use `src.training.Trainer` and `TrainingTask`. B0/B1 retain their dataclass configuration and adapt engine settings through `ExperimentConfig.trainer_config(seed)`. Their notebooks use 4 CPU workers for image loading, CUDA augmentation and training, patience 10, and fixed loss margin 0.3. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. Each notebook launches one seed-42 run with `run_experiment`, without a margin sweep. An optional shared `TrainingPolicy` carries experiment scheduling, selection, and stopping rules while the trainer performs backward, AMP, gradient clipping, optimizer updates, and checkpoint persistence.
+Classification and identification use `src.training.Trainer` and `TrainingTask`. B0/B1 retain their dataclass configuration and adapt engine settings through `ExperimentConfig.trainer_config(seed)`. Their notebooks use 4 CPU workers for image loading, CUDA augmentation and training, patience 10, and fixed loss margin 0.3. Both notebooks export normalized 128-dimensional embeddings from full-image inputs. B1 uses batch 128, BF16 AMP, channels-last, and fused AdamW. Verification and open-set search thresholds are calibrated separately on dev and frozen for test. Each notebook launches one seed-42 run with `run_experiment`, without a margin sweep. An optional shared `TrainingPolicy` carries experiment scheduling, selection, and stopping rules while the trainer performs backward, AMP, gradient clipping, optimizer updates, and checkpoint persistence.
 
-A/C and B0/B1 use the same checkpoint envelope: `format_version=1`, `checkpoint_kind`, `task`, `training_config`, and `metadata`. `last.pt` is resumable; `best.pt` is selected inference state. B0/B1 also export `embedding.pt` in this inference schema with only encoder keys in `task`. Different architectures still require their own loader: `RecognitionEmbedder` for A/C and `MetricEmbedder` for B0/B1. The shared schema does not make ResNet-18 and iResNet-34 weights interchangeable.
+Model A and B0/B1 use the same checkpoint envelope: `format_version=1`, `checkpoint_kind`, `task`, `training_config`, and `metadata`. `last.pt` is resumable; `best.pt` is selected inference state. B0/B1 also export `embedding.pt` in this inference schema with only encoder keys in `task`. Different architectures still require their own loader: `RecognitionEmbedder` for Model A and `MetricEmbedder` for B0/B1. The shared schema does not make ResNet-18 and iResNet-34 weights interchangeable.
 
 Use `src.recognition.identification.predictor:MetricEmbedder` as the model factory for B0/B1 in `verification/run.py`. It accepts a shared BGR uint8 112-by-112 crop and returns a normalized 128-dimensional vector. Existing private-loop metric checkpoints are not resumed by the new engine; use the fresh notebook artifact root documented in the [notebook guide](../../notebooks/metrics-learn/RECOGNITION.md).
 
@@ -63,6 +63,6 @@ Use `src.recognition.identification.predictor:MetricEmbedder` as the model facto
 | `preprocessing/detector.py` | Detector adapter for face-bbox proposals |
 | `preprocessing/prepare.py` | Resumable preparation and export of recognition manifests |
 
-Classification consumes the existing verification API. Identification supplies `MetricEmbedder` to that API through its model factory; it does not duplicate the evaluator or CLI. The B0/B1 notebooks consume the base manifests under `data/manifests/` through `load_image_protocol`: classification train rows feed P-by-K training, while verification val/test remain unseen dev/test identities. They decode the existing complete 112-by-112 images without detection or an additional bbox crop, then augment each batch on CUDA. `ExperimentConfig.face_protocol` retains its name for compatibility and points at the base manifest directory. `load_face_protocol` remains available for completed older bbox generations. A/C keep their separately selected bbox workflow.
+Classification consumes the existing verification API. Identification supplies `MetricEmbedder` to that API through its model factory; it does not duplicate the evaluator or CLI. The B0/B1 notebooks consume the base manifests under `data/manifests/` through `load_image_protocol`: classification train rows feed P-by-K training, while verification val/test remain unseen dev/test identities. They decode the existing complete 112-by-112 images without detection or an additional bbox crop, then augment each batch on CUDA. `ExperimentConfig.face_protocol` retains its name for compatibility and points at the base manifest directory. `load_face_protocol` remains available for completed older bbox generations. Model A uses the full-dataset classification and verification manifests under `data/manifests/vggface2_full/` by default.
 
-See the [recognition training guide](../../docs/recognition-training.md) for A/C and the shared pair CLI, or the [notebook guide](../../notebooks/metrics-learn/RECOGNITION.md) for B0/B1.
+See the [recognition training guide](../../docs/recognition-training.md) for Model A and the shared pair CLI, or the [notebook guide](../../notebooks/metrics-learn/RECOGNITION.md) for B0/B1.

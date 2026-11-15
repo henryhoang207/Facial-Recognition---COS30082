@@ -1,7 +1,7 @@
 verification:
   root: ../../data/VGGFace2
-  pairs: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/verification_pairs_val.csv
-  bbox_manifest: ../../data/manifests/recognition_faces/protocol_bf22763a4f78/bbox_manifest.csv
+  pairs: ../../data/manifests/vggface2_full/verification_pairs_val.csv
+  bbox_manifest: null
   pairs_format: csv
   target_fpr: 0.01
   selection_metric: cosine

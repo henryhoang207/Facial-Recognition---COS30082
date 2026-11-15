@@ -1,4 +1,4 @@
-"""A/C-local crop adapters, replaceable by Thành's shared loaders.
+"""Crop adapters for Model A.
 
 Folder input contains already detected face images. CSV input can additionally
 provide pixel bounding boxes for original frames. No automatic split is made.
@@ -21,7 +21,7 @@ from .augmentation import FaceBatchTransform
 from .config import PreprocessConfig, RecognitionConfig
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FaceRecord:
     path: Path
     identity: str
