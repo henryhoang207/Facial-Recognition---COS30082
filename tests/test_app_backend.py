@@ -20,6 +20,7 @@ def _config(tmp_path: Path) -> Path:
             "liveness": {"type": "dummy"},
             "embedder": {"type": "dummy", "dim": 64},
             "emotion": {"type": "dummy"},
+            "mask": {"type": "dummy", "detector_score": 0.6},
         },
         "pipeline": {"stable_frames": 3, "smooth_window": 4, "spoof_cooldown_s": 60},
         "registration": {"min_face_pixels": 10, "min_valid_frames": 3},
@@ -70,9 +71,7 @@ def _patched_record_spoof(tmp_path):
 
 
 def _register(client, name, seed, force=False):
-    files = [
-        ("frames", (f"{i}.jpg", _jpeg(_face(seed)), "image/jpeg")) for i in range(4)
-    ]
+    files = [("frames", (f"{i}.jpg", _jpeg(_face(seed)), "image/jpeg")) for i in range(4)]
     return client.post(
         "/api/persons/register",
         data={"name": name, "student_id": "1", "force": str(force).lower()},
@@ -176,3 +175,30 @@ def test_switching_embedder_reembeds_from_saved_faces(tmp_path):
     assert ctx.models.embedding_dim == 32
     assert len(ctx.gallery) == 1
     assert ctx.repo.list_persons(ctx.models.model_version)[0]["embedding_ok"]
+
+
+def test_mask_mode_reports_mask_and_skips_attendance(client):
+    _register(client, "Alice", seed=1)
+    masked = _face(1)
+    masked[120:180, 100:220] = 235  # nửa dưới khuôn mặt sáng, đều màu giống khẩu trang
+    with client.websocket_connect("/ws/stream?mode=mask") as ws:
+        assert ws.receive_json()["thresholds"]["mask"] == 0.5
+        for frame_id, frame in enumerate((_face(1), masked)):
+            ws.send_bytes(struct.pack(">I", frame_id) + _jpeg(frame))
+            face = ws.receive_json()["faces"][0]
+            assert face["identity"] is None and face["liveness"] is None
+            assert 0.0 <= face["mask"]["prob"] <= 1.0 and "mask" in face["mask"]["label"]
+    session_id = client.get("/api/health").json()["active_session_id"]
+    assert client.get(f"/api/sessions/{session_id}/attendance").json()["present"] == []
+    assert client.get("/api/health").json()["models"]["mask"]["detector_score"] == 0.6
+
+
+def test_mask_mode_without_model_is_refused(tmp_path):
+    config_path = _config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["models"]["mask"] = {"type": "mask", "path": str(tmp_path / "missing.pt")}
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with TestClient(create_app(config_path)) as client:
+        assert client.get("/api/health").json()["models"]["mask"] is None
+        with client.websocket_connect("/ws/stream?mode=mask") as ws:
+            assert ws.receive_json()["type"] == "error"

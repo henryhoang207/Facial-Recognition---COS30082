@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api } from "./api";
 import { Attendance } from "./pages/Attendance";
+import { Individual } from "./pages/Individual";
 import { Live } from "./pages/Live";
 import { Register } from "./pages/Register";
 import { SettingsPage } from "./pages/Settings";
@@ -10,6 +11,7 @@ const PAGES = [
   { id: "live", label: "Live" },
   { id: "register", label: "Register" },
   { id: "attendance", label: "Attendance" },
+  { id: "individual", label: "Individual" },
   { id: "settings", label: "Settings" },
 ] as const;
 
@@ -102,6 +104,7 @@ export default function App() {
         {page === "live" && <Live />}
         {page === "register" && <Register />}
         {page === "attendance" && <Attendance />}
+        {page === "individual" && <Individual />}
         {page === "settings" && <SettingsPage />}
       </main>
     </AppContext.Provider>

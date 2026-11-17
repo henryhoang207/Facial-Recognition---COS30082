@@ -18,10 +18,14 @@ models:
     dim: 128
   emotion:
     type: dummy
+  mask:
+    type: dummy
+    detector_score: 0.6
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder
   liveness: null           # null = threshold trong checkpoint liveness
+  mask: null               # null = threshold trong checkpoint khẩu trang (0.5)
 
 pipeline:
   max_faces: 5

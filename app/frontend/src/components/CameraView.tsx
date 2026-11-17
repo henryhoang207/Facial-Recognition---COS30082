@@ -84,7 +84,10 @@ export function CameraView({
               <span className="corner tr" />
               <span className="corner bl" />
               <span className="corner br" />
-              {renderLabel && <div className="face-label">{renderLabel(face)}</div>}
+              {renderLabel && (
+                // mặt sát mép trên: đưa nhãn vào trong khung để không bị cắt
+                <div className={y1 * scale < 36 ? "face-label is-inside" : "face-label"}>{renderLabel(face)}</div>
+              )}
             </div>
           );
         })}
