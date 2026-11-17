@@ -22,7 +22,10 @@ Checkpoints are read from `model/` (see `app/config.yaml`), which git ignores:
 model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
 model/Classification/Model_A.pt
 model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+model/Mask/mask_mobilenetv3s.pt          optional: Individual > Nam Khánh (face mask detection)
 ```
+
+If the mask checkpoint is missing the app still starts; only the mask tab says the model is not loaded.
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 
@@ -46,7 +49,15 @@ npm run build    # writes app/frontend/dist, served by python -m app.run
 
 Pages: **Live** (camera plus one panel with all three models for the selected face: anti-spoofing, face recognition
 with the top 3 matches, and all 7 emotion scores; check-ins below), **Register** (10-frame capture with a quality checklist),
-**Attendance** (sessions, present / absent / blocked, CSV export), **Settings** (thresholds, pipeline, models, registered people).
+**Attendance** (sessions, present / absent / blocked, CSV export), **Individual** (one tab per team member for their
+own feature; members and features are listed in `app/frontend/src/members.ts`), **Settings** (thresholds, pipeline,
+models, registered people).
+
+Individual > Nam Khánh, **face mask detection**: camera with a mask / no-mask label on every face, counts, mask
+probability for the selected face (this frame and smoothed) and the model's FMLD test results. It uses `mode=mask`,
+which runs only the detector and the mask classifier (MobileNetV3-Small, `src/mask/`), with the YuNet score lowered to
+`models.mask.detector_score` (0.6) because masked faces score lower. Nothing is logged to attendance in this mode.
+The mask threshold can be changed in Settings.
 
 ## Layout
 
@@ -85,7 +96,7 @@ browser JPEG ──► decode ──► detect (YuNet) ──► track (IoU) ─
 - Thresholds: `null` in the config means "use the one stored in the checkpoint" (liveness 0.985, Model A 0.416). They can be changed at runtime with `PUT /api/settings`.
 - Measured on a 4-thread CPU with the three real models: about 70 ms per frame with one face (detect 10, liveness 23, embed 13, emotion 23).
 
-Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. Other modes on the same socket: `register_check` (face count, size and liveness per frame, used by Register), and `liveness`, `recognition`, `emotion` to run one model on its own.
+Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. Other modes on the same socket: `register_check` (face count, size and liveness per frame, used by Register), and `liveness`, `recognition`, `emotion` to run one model on its own, and `mask` (detector + mask classifier, used by Individual).
 
 WebSocket messages: client sends binary `4-byte big-endian frame_id + JPEG`; server answers with JSON `{"type": "result", "frame_id", "latency_ms", "faces": [{"track_id", "box": [x1, y1, x2, y2], "liveness", "identity", "emotion", "logged"}]}`, then any events.
 

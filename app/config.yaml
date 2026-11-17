@@ -19,10 +19,15 @@ models:
   emotion:
     type: emotion_gru      # emotion_gru | dummy
     path: model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+  mask:                    # tính năng cá nhân (Nam Khánh): có / không đeo khẩu trang
+    type: mask             # mask | dummy; thiếu checkpoint thì app vẫn chạy, tab Mask bị tắt
+    path: model/Mask/mask_mobilenetv3s.pt
+    detector_score: 0.6    # YuNet bỏ sót mặt đeo khẩu trang ở 0.8, nên hạ khi chạy mode mask
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder
   liveness: null           # null = threshold trong checkpoint liveness
+  mask: null               # null = threshold trong checkpoint khẩu trang (0.5)
 
 pipeline:
   max_faces: 5

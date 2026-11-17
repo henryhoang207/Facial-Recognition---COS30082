@@ -1,5 +1,7 @@
 """Per-frame pipeline: detect -> track -> liveness gate -> embed + match -> emotion -> attendance.
 
+Mode "mask" (individual feature) is separate: detect -> track -> mask / no mask, nothing is logged.
+
 One FramePipeline per WebSocket connection (it owns the tracker); models, gallery
 and database are shared through AppContext.
 """
@@ -18,7 +20,7 @@ from .tracker import Track, Tracker
 if TYPE_CHECKING:
     from ..context import AppContext
 
-MODES = ("pipeline", "liveness", "recognition", "emotion", "register_check")
+MODES = ("pipeline", "liveness", "recognition", "emotion", "register_check", "mask")
 
 
 class _Clock:
@@ -41,6 +43,8 @@ class FramePipeline:
     def __init__(self, ctx: AppContext, mode: str = "pipeline"):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
+        if mode == "mask" and ctx.models.mask is None:
+            raise ValueError("mask model is not configured (models.mask in app/config.yaml)")
         self.ctx = ctx
         self.mode = mode
         cfg = ctx.config.pipeline
@@ -72,7 +76,8 @@ class FramePipeline:
         clock = _Clock()
         events: list[dict[str, Any]] = []
         with ctx.models.lock:
-            boxes = clock.run("detect", ctx.models.detector.detect, frame)[: cfg.max_faces]
+            score = ctx.models.mask_detector_score if self.mode == "mask" else None
+            boxes = clock.run("detect", ctx.models.detector.detect, frame, score)[: cfg.max_faces]
             tracks, removed = self.tracker.update(boxes)
             for track_id in removed:
                 self._drop(track_id)
@@ -94,6 +99,9 @@ class FramePipeline:
             "emotion": None,
             "logged": track.logged_person is not None,
         }
+        if self.mode == "mask":
+            face["mask"] = self._mask(frame, track, clock)
+            return face
         if self.mode in ("pipeline", "liveness", "register_check"):
             face["liveness"] = self._liveness(frame, track, clock)
         if self.mode == "register_check":
@@ -126,6 +134,19 @@ class FramePipeline:
             "raw": round(track.last_live, 4),
             "threshold": round(threshold, 4),
             "fresh": fresh,
+        }
+
+    def _mask(self, frame, track: Track, clock: _Clock) -> dict[str, Any]:
+        if self._due(track, 0) or not track.mask_probs:
+            _, prob = clock.run("mask", self.ctx.models.mask.predict_frame, frame, track.box)
+            track.mask_probs.append(float(prob))
+        smoothed = track.mask_prob() or 0.0
+        threshold = self.ctx.mask_threshold()
+        return {
+            "label": "mask" if smoothed >= threshold else "no_mask",
+            "prob": round(smoothed, 4),
+            "raw": round(track.mask_probs[-1], 4),
+            "threshold": round(threshold, 4),
         }
 
     def _identity(self, frame, track: Track, clock: _Clock) -> dict[str, Any]:

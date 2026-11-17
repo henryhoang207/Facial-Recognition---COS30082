@@ -35,7 +35,12 @@ async def stream(websocket: WebSocket, mode: str = "pipeline"):
         await websocket.close(code=1008)
         return
     ctx = websocket.app.state.ctx
-    pipeline = FramePipeline(ctx, mode)
+    try:
+        pipeline = FramePipeline(ctx, mode)
+    except ValueError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=1008)
+        return
     await websocket.send_json({"type": "ready", "mode": mode, **ctx.status()})
     try:
         while True:

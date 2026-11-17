@@ -45,6 +45,12 @@ class AppContext:
         value = self.config.thresholds.liveness
         return float(self.models.liveness.threshold) if value is None else value
 
+    def mask_threshold(self) -> float | None:
+        if self.models.mask is None:
+            return None
+        value = self.config.thresholds.mask
+        return float(self.models.mask.threshold) if value is None else value
+
     # lifecycle -----------------------------------------------------------
 
     def sync_gallery(self) -> dict:
@@ -88,6 +94,7 @@ class AppContext:
             "thresholds": {
                 "recognition": self.recognition_threshold(),
                 "liveness": self.liveness_threshold(),
+                "mask": self.mask_threshold(),
             },
             "gallery_size": len(self.gallery),
             "embedding_dim": self.models.embedding_dim,

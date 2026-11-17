@@ -28,6 +28,7 @@ class Track:
     live_probs: deque = field(init=False)
     identities: deque = field(init=False)  # (person_id | None, name | None, score)
     emotions: deque = field(init=False)  # dict label -> prob
+    mask_probs: deque = field(init=False)  # P(mask)
     logged_person: int | None = None
     last_spoof_event: float = 0.0
     last_live: float | None = None
@@ -37,9 +38,13 @@ class Track:
         self.live_probs = deque(maxlen=self.window)
         self.identities = deque(maxlen=self.window)
         self.emotions = deque(maxlen=self.window)
+        self.mask_probs = deque(maxlen=self.window)
 
     def live_prob(self) -> float | None:
         return float(np.mean(self.live_probs)) if self.live_probs else None
+
+    def mask_prob(self) -> float | None:
+        return float(np.mean(self.mask_probs)) if self.mask_probs else None
 
     def identity(self) -> tuple[int | None, str | None, float]:
         """Bỏ phiếu theo đa số trong cửa sổ; điểm = trung bình các phiếu của người thắng."""

@@ -24,11 +24,13 @@ class ModelsConfig(BaseModel):
     liveness: ModelSpec
     embedder: ModelSpec
     emotion: ModelSpec
+    mask: ModelSpec | None = None  # tính năng cá nhân (Nam Khánh); không có thì tab Mask báo chưa cấu hình
 
 
 class Thresholds(BaseModel):
     recognition: float | None = Field(default=None, ge=-1, le=1)
     liveness: float | None = Field(default=None, ge=0, le=1)
+    mask: float | None = Field(default=None, ge=0, le=1)
 
 
 class PipelineConfig(BaseModel):

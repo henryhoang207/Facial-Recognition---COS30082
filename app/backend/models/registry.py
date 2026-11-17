@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,9 +14,10 @@ import torch
 
 from ..config import AppConfig, ModelSpec
 from .detectors import CenterDetector, HaarDetector, YuNetDetector, ensure_file
-from .dummy import DummyEmotion, DummyLiveness, PixelEmbedder
+from .dummy import DummyEmotion, DummyLiveness, DummyMask, PixelEmbedder
 
 DEFAULT_RECOGNITION_THRESHOLD = 0.5
+log = logging.getLogger("faceguard")
 
 
 @dataclass
@@ -26,6 +28,8 @@ class ModelBundle:
     emotion: Any
     info: dict[str, dict[str, Any]]
     checkpoint_recognition_threshold: float
+    mask: Any = None
+    mask_detector_score: float | None = None
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -120,6 +124,26 @@ def build_emotion(config: AppConfig, spec: ModelSpec):
     raise ValueError(f"unknown emotion type {spec.type!r}")
 
 
+def build_mask(config: AppConfig, spec: ModelSpec | None):
+    """Trả về (model khẩu trang | None, ngưỡng score detector khi chạy mode mask)."""
+    if spec is None:
+        return None, None
+    score = (spec.model_extra or {}).get("detector_score")
+    score = None if score is None else float(score)
+    if spec.type == "dummy":
+        return DummyMask(), score
+    if spec.type == "mask":
+        path = config.path(spec.path or "")
+        if not spec.path or not path.exists():
+            # model khẩu trang là tính năng phụ: thiếu checkpoint thì app vẫn chạy, chỉ tắt tab Mask
+            log.warning("mask checkpoint not found (%s); mask mode disabled", path)
+            return None, score
+        from src.mask.predictor import MaskPredictor
+
+        return MaskPredictor(path, device=config.device), score
+    raise ValueError(f"unknown mask type {spec.type!r}")
+
+
 def _warm_up(bundle: ModelBundle) -> None:
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     box = (220, 140, 420, 340)
@@ -132,6 +156,8 @@ def _warm_up(bundle: ModelBundle) -> None:
     bundle.emotion.predict(
         crop_face(frame, box, bundle.emotion.img_size, bundle.emotion.crop_scale)
     )
+    if bundle.mask is not None:
+        bundle.mask.predict_frame(frame, box)
 
 
 def build_models(config: AppConfig) -> ModelBundle:
@@ -142,6 +168,7 @@ def build_models(config: AppConfig) -> ModelBundle:
     liveness = build_liveness(config, specs.liveness)
     embedder, recognition_threshold = build_embedder(config, specs.embedder)
     emotion = build_emotion(config, specs.emotion)
+    mask, mask_detector_score = build_mask(config, specs.mask)
     info = {
         "detector": {"type": specs.detector.type, "path": specs.detector.path},
         "liveness": {
@@ -163,8 +190,22 @@ def build_models(config: AppConfig) -> ModelBundle:
             "path": specs.emotion.path,
             "labels": list(emotion.labels),
         },
+        "mask": None
+        if mask is None
+        else {
+            "type": specs.mask.type,
+            "path": specs.mask.path,
+            "arch": mask.arch,
+            "checkpoint_threshold": float(mask.threshold),
+            "img_size": mask.img_size,
+            "crop_scale": mask.crop_scale,
+            "detector_score": mask_detector_score,
+        },
     }
-    bundle = ModelBundle(detector, liveness, embedder, emotion, info, recognition_threshold)
+    bundle = ModelBundle(
+        detector, liveness, embedder, emotion, info, recognition_threshold,
+        mask, mask_detector_score,
+    )
     _warm_up(bundle)
     info["load_seconds"] = round(time.perf_counter() - started, 2)
     return bundle
