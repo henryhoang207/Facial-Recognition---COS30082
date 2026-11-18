@@ -17,6 +17,18 @@ export interface Identity {
   top?: { person_id: number; name: string; score: number }[];
 }
 
+export interface AttendanceMLP {
+  state: "needs_gallery" | "collecting" | "accepted" | "rejected";
+  frames: number;
+  required_frames: number;
+  gallery_size: number;
+  required_gallery_size: number;
+  score: number | null;
+  threshold: number;
+  candidate_name: string | null;
+  accepted: boolean;
+}
+
 export interface Emotion {
   label: string;
   probs: Record<string, number>;
@@ -27,6 +39,7 @@ export interface Face {
   box: [number, number, number, number];
   liveness: Liveness | null;
   identity: Identity | null;
+  attendance_mlp?: AttendanceMLP | null;
   emotion: Emotion | null;
   logged: boolean;
   quality?: { ok: boolean; reasons: string[]; face_pixels: number };

@@ -12,6 +12,7 @@ const STAGES = [
   { key: "liveness", label: "Anti-spoofing" },
   { key: "embed", label: "Recognition" },
   { key: "emotion", label: "Emotion" },
+  { key: "attendance_mlp", label: "Attendance MLP" },
 ];
 
 export function Live() {
@@ -51,6 +52,7 @@ export function Live() {
   const stream = useFaceStream(camera.capture, "pipeline", camera.state === "on", onEvent);
   const faces = stream.result?.faces ?? [];
   const latency = stream.result?.latency_ms ?? {};
+  const mlpEnabled = Boolean(health?.models.attendance);
   // mặc định chọn mặt lớn nhất (server trả về theo thứ tự diện tích giảm dần)
   const selected = faces.find((f) => f.track_id === pickedTrack) ?? faces[0];
 
@@ -65,14 +67,14 @@ export function Live() {
           flashKey={flash}
           selectedTrack={faces.length > 1 ? selected?.track_id : undefined}
           onSelect={setPickedTrack}
-          tone={(f) => (f.liveness?.label === "spoof" ? "spoof" : f.identity?.known ? "live" : "neutral")}
-          renderLabel={(f) => <FaceLabel face={f} />}
+          tone={(f) => faceStatus(f, mlpEnabled).tone}
+          renderLabel={(f) => <FaceLabel face={f} mlpEnabled={mlpEnabled} />}
         />
         <div className="stage-bar">
           <StreamDot status={stream.status} />
           <span className="num">{stream.fps.toFixed(1)} fps</span>
           <div className="pipeline-strip" aria-label="Time per step for the last frame">
-            {STAGES.map((s) => (
+            {STAGES.filter((s) => s.key !== "attendance_mlp" || health?.models.attendance).map((s) => (
               <span key={s.key} className={latency[s.key] !== undefined ? "step on" : "step"}>
                 {s.label}
                 <span className="num">{latency[s.key] !== undefined ? `${Math.round(latency[s.key])} ms` : "–"}</span>
@@ -93,23 +95,31 @@ export function Live() {
       <aside className="side analysis" aria-label="Model results">
         {faces.length > 1 && (
           <div className="face-picker" role="tablist" aria-label="Face">
-            {faces.map((f, i) => (
-              <button
-                key={f.track_id}
-                type="button"
-                role="tab"
-                aria-selected={f.track_id === selected?.track_id}
-                className={`face-pick tone-${faceTone(f)}`}
-                onClick={() => setPickedTrack(f.track_id)}
-              >
-                {faceName(f) ?? `Face ${i + 1}`}
-              </button>
-            ))}
+            {faces.map((f, i) => {
+              const { label, tone } = faceStatus(f, mlpEnabled);
+              return (
+                <button
+                  key={f.track_id}
+                  type="button"
+                  role="tab"
+                  aria-label={`Face ${i + 1}: ${label}`}
+                  aria-selected={f.track_id === selected?.track_id}
+                  className={`face-pick tone-${tone}`}
+                  onClick={() => setPickedTrack(f.track_id)}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         )}
         {!selected ? (
           <div className="analysis-empty">
-            <Empty>No face in view. Step in front of the camera to see all three models at work.</Empty>
+            <Empty>
+              {health?.models.attendance && health.gallery_size !== Number(health.models.attendance.gallery_size)
+                ? `Register exactly ${health.models.attendance.gallery_size} people to test attendance MLP (${health.gallery_size} registered).`
+                : "No face in view. Step in front of the camera to see the models at work."}
+            </Empty>
           </div>
         ) : (
           <FaceAnalysis
@@ -144,22 +154,36 @@ export function Live() {
   );
 }
 
-const faceTone = (f: Face) => (f.liveness?.label === "spoof" ? "spoof" : f.identity?.known ? "live" : "neutral");
-const faceName = (f: Face) =>
-  f.liveness?.label === "spoof" ? "Spoof" : f.identity?.known ? f.identity.name : null;
+function faceStatus(face: Face, mlpEnabled: boolean) {
+  if (face.liveness?.label === "spoof") {
+    return { label: "Spoof blocked", tone: "spoof" } as const;
+  }
+  const mlp = face.attendance_mlp;
+  if (mlpEnabled || mlp) {
+    if (mlp?.accepted && mlp.candidate_name) {
+      return { label: mlp.candidate_name, tone: "live" } as const;
+    }
+    const label = mlp?.state === "rejected" ? "Unknown" : "Unverified";
+    return { label, tone: "neutral" } as const;
+  }
+  if (face.identity?.known && face.identity.name) {
+    return { label: face.identity.name, tone: "live" } as const;
+  }
+  return { label: "Unknown", tone: "neutral" } as const;
+}
 
-function FaceLabel({ face }: { face: Face }) {
-  if (face.liveness?.label === "spoof") return <span className="tag tag-spoof">Spoof blocked</span>;
-  const name = face.identity?.known ? face.identity.name : "Not registered";
+function FaceLabel({ face, mlpEnabled }: { face: Face; mlpEnabled: boolean }) {
+  const { label, tone } = faceStatus(face, mlpEnabled);
+  if (tone === "spoof") return <span className="tag tag-spoof">{label}</span>;
   return (
-    <span className={face.identity?.known ? "tag tag-live" : "tag"}>
-      {name}
+    <span className={tone === "live" ? "tag tag-live" : "tag"}>
+      {label}
       {face.emotion && <EmotionIcon label={face.emotion.label} size={15} />}
     </span>
   );
 }
 
-/** Kết quả của cả 3 model cho một khuôn mặt, theo đúng thứ tự pipeline. */
+/** Kết quả các model cho một khuôn mặt. */
 function FaceAnalysis({
   face,
   models,
@@ -172,6 +196,10 @@ function FaceAnalysis({
   const live = face.liveness;
   const spoof = live?.label === "spoof";
   const identity = face.identity;
+  const mlp = face.attendance_mlp;
+  const mlpEnabled = Boolean(models?.attendance || mlp);
+  const { label, tone } = faceStatus(face, mlpEnabled);
+  const checkedIn = face.logged && tone === "live";
   const emotion = face.emotion;
   const emotionRows = emotion ? Object.entries(emotion.probs).sort((a, b) => b[1] - a[1]) : [];
   const skipped = <p className="skipped">Skipped: the face did not pass anti-spoofing.</p>;
@@ -180,12 +208,12 @@ function FaceAnalysis({
     <div className={`analysis-card ${spoof ? "is-spoof" : ""}`}>
       <header className="analysis-head">
         <div>
-          <p className="analysis-name">{spoof ? "Spoof attempt" : identity?.known ? identity.name : "Not registered"}</p>
+          <p className="analysis-name">{label}</p>
           <p className="muted small">
-            {spoof ? "Blocked before recognition. Nothing is logged." : face.logged ? "Checked in for this session." : identity?.known ? "Hold still to check in." : "This face is not in the gallery."}
+            {spoof ? "Blocked before recognition. Nothing is logged." : checkedIn ? "Checked in for this session." : mlp?.state === "needs_gallery" ? `Attendance MLP needs exactly ${mlp.required_gallery_size} registered people.` : mlp?.state === "rejected" ? "Attendance MLP rejected this attempt." : mlpEnabled ? "Hold still for five live frames." : identity?.known ? "Hold still to check in." : "This face is not in the gallery."}
           </p>
         </div>
-        {face.logged && !spoof && <span className="badge badge-live">Checked in</span>}
+        {checkedIn && <span className="badge badge-live">Checked in</span>}
       </header>
 
       <section className="model-block">
@@ -205,20 +233,20 @@ function FaceAnalysis({
           skipped
         ) : (
           <>
-            <p className={`verdict ${identity.known ? "ok" : ""}`}>{identity.known ? identity.name : "No match"}</p>
-            {(identity.top ?? []).length === 0 ? (
-              <p className="muted small">No one is registered yet.</p>
-            ) : (
-              (identity.top ?? []).map((m) => (
+            {!mlpEnabled && <p className={`verdict ${identity.known ? "ok" : ""}`}>{identity.known ? identity.name : "No match"}</p>}
+            <details open={mlpEnabled ? undefined : true}>
+              <summary className="muted small">Gallery candidate scores</summary>
+              {(identity.top ?? []).length === 0 && <p className="muted small">No one is registered yet.</p>}
+              {identity.top?.map((match) => (
                 <Meter
-                  key={m.person_id}
-                  label={m.name}
-                  value={Math.max(0, m.score)}
+                  key={match.person_id}
+                  label={match.name}
+                  value={Math.max(0, match.score)}
                   threshold={identity.threshold}
-                  tone={m.score >= identity.threshold ? "accent" : "quiet"}
+                  tone={!mlpEnabled && match.score >= identity.threshold ? "accent" : "quiet"}
                 />
-              ))
-            )}
+              ))}
+            </details>
             {!identity.known && (
               <button type="button" className="button button-small" onClick={onRegister}>
                 Register this person
@@ -228,8 +256,28 @@ function FaceAnalysis({
         )}
       </section>
 
+      {mlpEnabled && (
+        <section className={`model-block ${spoof ? "is-skipped" : ""}`}>
+            <ModelHead step={3} title="Attendance MLP" detail={modelFile(models?.attendance)} />
+            {spoof ? skipped : !mlp ? (
+              <p className="muted small">Waiting for the first prediction…</p>
+            ) : mlp.state === "needs_gallery" ? (
+              <p className="muted small">Needs exactly {mlp.required_gallery_size} registered people; {mlp.gallery_size} now. No check-in will be logged.</p>
+            ) : mlp.score === null ? (
+              <p className="muted small">Collecting live frames: {mlp.frames}/{mlp.required_frames}</p>
+            ) : (
+              <>
+                <p className={`verdict ${mlp.accepted ? "ok" : "warn"}`}>
+                  {mlp.accepted ? "Accepted" : "Rejected"}
+                </p>
+                <Meter label="MLP confidence" value={mlp.score} threshold={mlp.threshold} tone={mlp.accepted ? "accent" : "warn"} />
+              </>
+            )}
+        </section>
+      )}
+
       <section className={`model-block ${spoof ? "is-skipped" : ""}`}>
-        <ModelHead step={3} title="Emotion" detail={modelFile(models?.emotion)} />
+        <ModelHead step={mlpEnabled ? 4 : 3} title="Emotion" detail={modelFile(models?.emotion)} />
         {spoof || !emotion ? (
           spoof ? skipped : <p className="muted small">Waiting for the first prediction…</p>
         ) : (

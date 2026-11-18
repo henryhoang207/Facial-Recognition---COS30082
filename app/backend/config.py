@@ -24,6 +24,7 @@ class ModelsConfig(BaseModel):
     liveness: ModelSpec
     embedder: ModelSpec
     emotion: ModelSpec
+    attendance: ModelSpec | None = None
 
 
 class Thresholds(BaseModel):

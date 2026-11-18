@@ -26,6 +26,20 @@ model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 
+### Attendance MLP behind Model A
+
+Add this entry under `models` to let the MLP decide check-ins after Model A produces embeddings:
+
+```yaml
+  attendance:
+    type: mlp
+    path: model/Attendance/MLP.pt
+```
+
+The checkpoint must match the exact Model A file (`model/Classification/Model_A.pt`, SHA-256 `2c83aa7d817faee1271a1382476cebfb0e3f9d210b7b015eb5dd3864dfb6748f`). The current MLP requires five consecutive live frames and **exactly six registered people**; otherwise it records no check-in. The Live page shows collection progress, MLP confidence and its decision. The existing cosine result remains visible for comparison but does not decide attendance while the MLP is enabled.
+
+The checkpoint was calibrated with three enrollment images per person, while this app registers from six to ten valid frames. Measure accuracy with real camera attempts before relying on the threshold.
+
 Mock data for the UI: `python -m app.backend.seed --config app/config.mock.yaml --reset` (6 people, 2 sessions, 3 spoof events).
 
 Tests: `python -m pytest tests/test_app_backend.py` (dummy models, about 2 s).

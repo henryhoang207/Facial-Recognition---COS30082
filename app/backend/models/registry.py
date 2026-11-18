@@ -26,6 +26,7 @@ class ModelBundle:
     emotion: Any
     info: dict[str, dict[str, Any]]
     checkpoint_recognition_threshold: float
+    attendance: Any | None = None
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -145,6 +146,17 @@ def build_models(config: AppConfig) -> ModelBundle:
     liveness = build_liveness(config, specs.liveness)
     embedder, recognition_threshold = build_embedder(config, specs.embedder)
     emotion = build_emotion(config, specs.emotion)
+    attendance = None
+    if specs.attendance is not None:
+        if specs.attendance.type != "mlp" or specs.embedder.type != "recognition":
+            raise ValueError("attendance MLP requires the Model A embedder")
+        from src.recognition.attendance.model import AttendancePredictor
+
+        attendance = AttendancePredictor(
+            _require(config, specs.attendance), encoder_sha256=embedder.model_version
+        )
+        if attendance.frame_count != 5:
+            raise ValueError("attendance MLP must use five frames")
     info = {
         "detector": {"type": specs.detector.type, "path": specs.detector.path},
         "liveness": {
@@ -167,7 +179,17 @@ def build_models(config: AppConfig) -> ModelBundle:
             "labels": list(emotion.labels),
         },
     }
-    bundle = ModelBundle(detector, liveness, embedder, emotion, info, recognition_threshold)
+    if attendance is not None:
+        info["attendance"] = {
+            "type": "mlp",
+            "path": specs.attendance.path,
+            "threshold": attendance.threshold,
+            "frame_count": attendance.frame_count,
+            "gallery_size": attendance.gallery_size,
+        }
+    bundle = ModelBundle(
+        detector, liveness, embedder, emotion, info, recognition_threshold, attendance
+    )
     _warm_up(bundle)
     info["load_seconds"] = round(time.perf_counter() - started, 2)
     return bundle
