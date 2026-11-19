@@ -68,7 +68,7 @@ Repeat the command with `--report <output.json>` and `--checkpoint <run>/attenda
 
 To train the source-balanced experiment, add `--set balance_training_sources=true` to the YouTube Faces training command. Each draw chooses a source, identity, clip, and unique window uniformly at its level, then selects one of the window's gallery variants. The sampler keeps the same epoch size and training budget as the default configuration.
 
-For checkpoint selection on fixed galleries, set `fixed_gallery_dev` to the fixed-gallery manifest and set `training.monitor` to `val_gallery_correct_rate` with mode `max`. Only dev rows enter checkpoint selection. Each epoch uses one threshold that limits unknown accepts in every source and gallery mode. The correct and wrong-enrolled rates average the four source and mode strata equally for YouTube Faces and VidTIMIT. The exported checkpoint uses the selected dev threshold. Use the fixed-gallery evaluator to report held-out results after selecting the run.
+For checkpoint selection on fixed galleries, set `fixed_gallery_dev` to the fixed-gallery manifest and set `training.monitor` to `val_gallery_correct_rate` with mode `max`. Only dev rows enter checkpoint selection. Each epoch uses one threshold per model. In every source and gallery mode, it caps both the share of all trials that produce a wrong record and the share of guest trials that are accepted. A wrong record includes assigning an enrolled person to the wrong identity. The correct and wrong-enrolled rates average the four source and mode strata equally for YouTube Faces and VidTIMIT. The exported checkpoint uses the selected dev threshold. Use the fixed-gallery evaluator to report held-out results after selecting the run.
 
 ### Add the top-2 gap
 

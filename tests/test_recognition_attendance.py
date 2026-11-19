@@ -82,9 +82,9 @@ def test_fixed_gallery_validation_calibrates_on_each_dev_stratum(tmp_path):
     validate = FixedGalleryValidation(path, ("score",), ("video",), 0.01, device)
     metrics = validate(lambda features: features[:, 0], device)
 
-    assert metrics["val_gallery_threshold"] > torch.sigmoid(torch.tensor(2.0)).item()
+    assert metrics["val_gallery_threshold"] > torch.sigmoid(torch.tensor(3.0)).item()
     assert metrics["val_gallery_correct_rate"] == 0.5
-    assert metrics["val_gallery_wrong_rate"] == 0.25
+    assert metrics["val_gallery_wrong_rate"] == 0.0
 
 
 def test_youtube_faces_crops_xy_boxes_in_wide_clips(tmp_path):

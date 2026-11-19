@@ -104,6 +104,23 @@ def select_threshold(labels, scores, target, source_masks):
     return float(np.nextafter(max(excluded), np.inf))
 
 
+def select_gallery_threshold(scores, correct, enrolled, target, strata):
+    """Cap both wrong records per trial and guest accepts per guest in each stratum."""
+    scores = np.asarray(scores, dtype=np.float64)
+    limits = []
+    for mask in strata:
+        guests = mask & ~enrolled
+        for negatives, population in ((mask & ~correct, mask), (guests, guests)):
+            wrong_scores = scores[negatives]
+            allowed = int(target * population.sum())
+            if len(wrong_scores) > allowed:
+                index = len(wrong_scores) - 1 - allowed
+                limits.append(np.partition(wrong_scores, index)[index])
+    if not limits:
+        return float(scores.min())
+    return float(np.nextafter(max(limits), np.inf))
+
+
 def source_sampling_weights(path: Path):
     keys = [
         (row["identity"], row["clip"], row["frame_paths"])
@@ -148,13 +165,14 @@ class FixedGalleryValidation:
             raise ValueError("fixed-gallery dev has invalid features or labels")
         self.correct = kinds == "correct"
         self.enrolled = kinds != "unknown"
+        modes = sorted(set(mode))
         self.strata = {
             (name, scenario): (source == name) & (mode == scenario)
             for name in sorted(sources)
-            for scenario in ("random", "hard")
+            for scenario in modes
         }
         self.enrolled_masks = [mask & self.enrolled for mask in self.strata.values()]
-        if set(mode) != {"random", "hard"} or any(
+        if not {"random", "hard"} <= set(modes) or any(
             not (mask & self.correct).any() or not (mask & ~self.enrolled).any()
             for mask in self.strata.values()
         ):
@@ -166,7 +184,9 @@ class FixedGalleryValidation:
 
     def __call__(self, task, _device):
         scores = task(self.inputs).sigmoid().cpu().numpy().astype(np.float64)
-        threshold = select_threshold(self.enrolled, scores, self.target, self.strata)
+        threshold = select_gallery_threshold(
+            scores, self.correct, self.enrolled, self.target, self.strata.values()
+        )
         accepted = scores >= threshold
         return {
             "val_gallery_correct_rate": float(
