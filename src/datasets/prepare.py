@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from importlib import import_module
 from pathlib import Path
 
 import yaml
@@ -21,13 +22,15 @@ PREPARERS = {
     "emotion": EmotionPreparer,
     "team": TeamPreparer,
 }
+DEFAULT_PREPARERS = tuple(PREPARERS)
+PREPARERS["hand_gestures"] = import_module("src.hand-gestures.manifest").GesturePreparer
 
 
 def load_config(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
-        "--only", nargs="+", choices=tuple(PREPARERS), default=list(PREPARERS)
+        "--only", nargs="+", choices=tuple(PREPARERS), default=list(DEFAULT_PREPARERS)
     )
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args(argv)
@@ -42,9 +45,14 @@ def load_config(argv: list[str] | None = None):
     updates = {"output_dir": (base / config.output_dir).resolve()}
     for name in PREPARERS:
         source = getattr(config, name)
-        updates[name] = source.model_copy(
-            update={"root": (base / source.root).resolve()}
-        )
+        if source is None:
+            if name in args.only:
+                parser.error(f"{name} requires a source in the configuration")
+            continue
+        paths = {"root": (base / source.root).resolve()}
+        if name == "hand_gestures" and source.review is not None:
+            paths["review"] = (base / source.review).resolve()
+        updates[name] = source.model_copy(update=paths)
     return config.model_copy(update=updates), args.only
 
 
