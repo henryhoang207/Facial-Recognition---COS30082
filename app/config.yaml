@@ -14,11 +14,11 @@ models:
     type: liveness         # liveness | dummy
     path: model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
   embedder:
-    type: recognition      # recognition (Model A/C) | metric | dummy
-    path: model/Classification/Model_A.pt
+    type: metric           # metric (Model B) | recognition (Model A/C) | dummy
+    path: model/Classification/Model_B.pt
   emotion:
     type: emotion_gru      # emotion_gru | dummy
-    path: model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+    path: model/Emotion/emotionv4.pt
   gesture:
     type: alphabet_mlp
     path: artifacts/hand_gestures/alphabet
@@ -26,7 +26,7 @@ models:
     device: auto
 
 thresholds:
-  recognition: null        # null = val_score_threshold trong checkpoint embedder
+  recognition: null        # null = threshold trong checkpoint embedder
   liveness: null           # null = threshold trong checkpoint liveness
 
 pipeline:

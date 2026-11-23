@@ -9,6 +9,8 @@ import pytest
 import torch
 from torch import nn
 
+from app.backend.config import AppConfig
+from app.backend.models.registry import build_embedder
 from src.recognition.identification import predictor
 from src.recognition.verification import VerificationConfig
 from src.recognition.verification.run import (
@@ -139,6 +141,26 @@ def test_128_dimensional_checkpoint_round_trip(tmp_path, common_payload):
     vector = embedder.embed(np.zeros((112, 112, 3), dtype=np.uint8))
     assert vector.shape == (128,)
     assert np.linalg.norm(vector) == pytest.approx(1, abs=1e-5)
+
+
+def test_app_uses_metric_checkpoint_validation_threshold(tmp_path, common_payload):
+    checkpoint = tmp_path / "Model_B.pt"
+    torch.save(common_payload, checkpoint)
+    config = AppConfig.model_validate(
+        {
+            "models": {
+                "detector": {"type": "center"},
+                "liveness": {"type": "dummy"},
+                "emotion": {"type": "dummy"},
+                "embedder": {"type": "metric", "path": str(checkpoint)},
+            },
+        }
+    )
+
+    embedder, threshold = build_embedder(config, config.models.embedder)
+
+    assert isinstance(embedder, predictor.MetricEmbedder)
+    assert threshold == pytest.approx(0.4)
 
 
 def test_encoder_only_export_matches_dataset_normalization(tmp_path, common_payload):

@@ -1,8 +1,6 @@
-"""Loader for the MobileNetV3-Large + GRU emotion checkpoint.
+"""Load CNN + GRU emotion checkpoints for live inference.
 
-The checkpoint is a clip model: per-frame MobileNetV3 features go through a GRU.
-For live video the GRU hidden state is kept per track, so each new frame updates
-that person's state instead of re-reading a 16-frame clip.
+The predictor carries the GRU hidden state forward per face track.
 """
 
 from __future__ import annotations
@@ -17,15 +15,36 @@ from torch import nn
 
 
 class EmotionNet(nn.Module):
-    def __init__(self, num_classes: int, hidden: int, dropout: float):
+    def __init__(
+        self, num_classes: int, hidden: int, dropout: float, *, model_name: str = ""
+    ):
         super().__init__()
-        self.backbone = torchvision.models.mobilenet_v3_large().features
-        self.gru = nn.GRU(960, hidden, batch_first=True)
+        if model_name == "mobilenetv4_conv_small_gru":
+            import timm
+
+            self.backbone = timm.create_model(
+                "mobilenetv4_conv_small", pretrained=False, num_classes=0
+            )
+            feature_dim = self.backbone.head_hidden_size
+        elif model_name == "efficientnet_b0_gru":
+            backbone = torchvision.models.efficientnet_b0(weights=None)
+            self.backbone = backbone.features
+            feature_dim = backbone.classifier[-1].in_features
+        elif model_name in ("", "mobilenet_v3_large_gru", "mobilenetv3_gru"):
+            backbone = torchvision.models.mobilenet_v3_large(weights=None)
+            self.backbone = backbone.features
+            feature_dim = backbone.classifier[0].in_features
+        else:
+            raise ValueError(f"unsupported emotion checkpoint model: {model_name!r}")
+
+        self.gru = nn.GRU(feature_dim, hidden, batch_first=True)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, num_classes))
 
     def forward(self, x: torch.Tensor, hidden: torch.Tensor | None = None):
-        features = self.backbone(x).mean(dim=(2, 3)).unsqueeze(1)
-        output, hidden = self.gru(features, hidden)
+        features = self.backbone(x)
+        if features.ndim == 4:
+            features = features.mean(dim=(2, 3))
+        output, hidden = self.gru(features.unsqueeze(1), hidden)
         return self.head(output[:, -1]), hidden
 
 
@@ -34,7 +53,9 @@ class EmotionGRUPredictor:
         self.device = torch.device(device)
         payload = torch.load(Path(checkpoint), map_location="cpu", weights_only=True)
         config = payload["config"]
-        if config.get("task") != "emotion":
+        model_name = config.get("model", "")
+        legacy_v3 = model_name == "mobilenetv3_gru" and "task" not in config
+        if config.get("task") != "emotion" and not legacy_v3:
             raise ValueError("checkpoint is not an emotion model")
         self.labels: list[str] = list(config["class_names"])
         self.img_size = int(config.get("image_size", 224))
@@ -45,6 +66,7 @@ class EmotionGRUPredictor:
             len(self.labels),
             int(config.get("gru_hidden_size", 128)),
             float(config.get("head_dropout", 0.3)),
+            model_name=model_name,
         )
         self.model.load_state_dict(payload["model"], strict=True)
         self.model.to(self.device).eval()

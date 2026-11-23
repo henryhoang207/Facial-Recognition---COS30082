@@ -20,11 +20,22 @@ Checkpoints are read from `model/` (see `app/config.yaml`), which git ignores:
 
 ```
 model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
-model/Classification/Model_A.pt
-model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+model/Classification/Model_B.pt
+model/Emotion/emotionv4.pt
 ```
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
+
+The Emotion loader reads the architecture from the checkpoint metadata and verifies all weights. The default MobileNetV4 checkpoint uses six labels. To use the seven-label MobileNetV3-Large checkpoint, set `models.emotion.path` to `model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt`. [Emotion checkpoints on Google Drive](https://drive.google.com/drive/folders/1w5z1pziVqTYj1JJ0MXEX0_Z_53s928N3)
+
+### Switch between face recognition models
+
+| Model | `models.embedder.type` | `models.embedder.path` |
+| --- | --- | --- |
+| A (ResNet-18) | `recognition` | `model/Classification/Model_A.pt` |
+| B (iResNet-34 + ArcFace, default) | `metric` | `model/Classification/Model_B.pt` |
+
+On startup or reload, the app rebuilds gallery embeddings from saved face crops for the selected checkpoint. Keep `thresholds.recognition: null` in the config and runtime settings to use that checkpoint's validation threshold. The checkpoint threshold was calibrated for pair verification. Gallery matching can use its own threshold through Settings. Use the **Recognition** timing on Live to compare per-frame embedding time.
 
 ### ASL Alphabet on the Live page
 
@@ -49,7 +60,7 @@ npm run build    # writes app/frontend/dist, served by python -m app.run
 ```
 
 Pages: **Live** (camera plus one panel with all three models for the selected face: anti-spoofing, face recognition
-with the top 3 matches, and all 7 emotion scores; check-ins below), **Register** (10-frame capture with a quality checklist),
+with the top 3 matches, and scores for the loaded emotion labels; check-ins below), **Register** (10-frame capture with a quality checklist),
 **Attendance** (sessions, present / absent / blocked, CSV export), **Settings** (thresholds, pipeline, models, registered people).
 
 ## Layout
@@ -86,8 +97,7 @@ browser JPEG ──► decode ──► detect (YuNet) ──► track (IoU) ─
 
 - Labels are smoothed per track over `pipeline.smooth_window` frames: mean P(live), majority vote for identity, mean emotion probabilities.
 - A person is logged only after `stable_frames` consecutive frames that are all live and all the same person.
-- Thresholds: `null` in the config means "use the one stored in the checkpoint" (liveness 0.985, Model A 0.416). They can be changed at runtime with `PUT /api/settings`.
-- Measured on a 4-thread CPU with the three real models: about 70 ms per frame with one face (detect 10, liveness 23, embed 13, emotion 23).
+- Set a threshold to `null` to use the value stored in the loaded checkpoint. Change runtime thresholds with `PUT /api/settings`.
 
 Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. Other modes on the same socket: `register_check` (face count, size and liveness per frame, used by Register), and `liveness`, `recognition`, `emotion` to run one model on its own.
 
