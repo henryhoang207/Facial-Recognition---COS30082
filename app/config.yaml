@@ -19,6 +19,11 @@ models:
   emotion:
     type: emotion_gru      # emotion_gru | dummy
     path: model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+  gesture:
+    type: alphabet_mlp
+    path: artifacts/hand_gestures/alphabet
+    hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
+    device: auto
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder

@@ -24,6 +24,7 @@ class ModelsConfig(BaseModel):
     liveness: ModelSpec
     embedder: ModelSpec
     emotion: ModelSpec
+    gesture: ModelSpec | None = None
 
 
 class Thresholds(BaseModel):

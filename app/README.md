@@ -26,6 +26,10 @@ model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 
+### ASL Alphabet on the Live page
+
+The ASL card beside the camera shows the current letter and classifier confidence, including when only a hand is visible. Both configurations load the latest completed Alphabet MLP from `artifacts/hand_gestures/alphabet/`. Install the gesture dependencies with `python -m pip install -r requirements/hand-gestures.txt`. The card needs the training run's `metadata.json` and `best.pt`, plus `artifacts/hand_gestures/assets/hand_landmarker.task`. To pin a run, set `models.gesture.path` to its directory. The mock configuration uses dummy face classifiers and the same real ASL model. [Alphabet training and assets](../docs/hand-gestures/implementation-plan.md#asl-alphabet-follow-up)
+
 Mock data for the UI: `python -m app.backend.seed --config app/config.mock.yaml --reset` (6 people, 2 sessions, 3 spoof events).
 
 Tests: `python -m pytest tests/test_app_backend.py` (dummy models, about 2 s).

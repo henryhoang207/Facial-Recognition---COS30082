@@ -18,6 +18,11 @@ models:
     dim: 128
   emotion:
     type: dummy
+  gesture:
+    type: alphabet_mlp
+    path: artifacts/hand_gestures/alphabet
+    hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
+    device: auto
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder

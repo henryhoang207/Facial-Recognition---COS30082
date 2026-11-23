@@ -3,15 +3,16 @@ import { api, timeOf } from "../api";
 import { useApp } from "../App";
 import { CameraView } from "../components/CameraView";
 import { EmotionIcon, Empty, Meter, useToast } from "../components/ui";
-import { useCamera } from "../hooks/useCamera";
-import { useFaceStream } from "../hooks/useFaceStream";
-import type { AttendanceRow, Face, StreamEvent } from "../types";
+import { type CameraState, useCamera } from "../hooks/useCamera";
+import { type StreamStatus, useFaceStream } from "../hooks/useFaceStream";
+import type { AttendanceRow, Face, StreamEvent, StreamResult } from "../types";
 
 const STAGES = [
   { key: "detect", label: "Detect" },
   { key: "liveness", label: "Anti-spoofing" },
   { key: "embed", label: "Recognition" },
   { key: "emotion", label: "Emotion" },
+  { key: "gesture", label: "ASL" },
 ];
 
 export function Live() {
@@ -91,6 +92,7 @@ export function Live() {
       </section>
 
       <aside className="side analysis" aria-label="Model results">
+        <GestureAnalysis camera={camera.state} status={stream.status} result={stream.result} />
         {faces.length > 1 && (
           <div className="face-picker" role="tablist" aria-label="Face">
             {faces.map((f, i) => (
@@ -141,6 +143,42 @@ export function Live() {
         )}
       </section>
     </div>
+  );
+}
+
+function GestureAnalysis({
+  camera,
+  status,
+  result,
+}: {
+  camera: CameraState;
+  status: StreamStatus;
+  result: StreamResult | null;
+}) {
+  const gesture = camera === "on" && status === "live" ? result?.gesture : undefined;
+  const label = gesture?.status === "detected" ? gesture.label : null;
+  const confidence = label ? gesture?.confidence : null;
+
+  let message = "Show one hand to the camera.";
+  if (camera === "starting") message = "Starting camera…";
+  else if (camera === "denied") message = "Allow camera access to recognize ASL letters.";
+  else if (camera !== "on") message = "Connect a camera to recognize ASL letters.";
+  else if (status === "reconnecting") message = "Reconnecting to the live stream…";
+  else if (status !== "live" || !result) message = "Waiting for the live stream…";
+  else if (!gesture || gesture.status === "unavailable") message = "ASL recognition is unavailable.";
+
+  return (
+    <section className="analysis-card gesture-card" aria-labelledby="gesture-title">
+      <h2 className="analysis-name" id="gesture-title">ASL letter</h2>
+      <div className="gesture-result">
+        <div aria-live="polite" aria-atomic="true">
+          {label ? <p className="gesture-letter">{label}</p> : <p className="muted small">{message}</p>}
+        </div>
+        {confidence != null && (
+          <Meter label="Confidence" value={confidence} detail={`${Math.round(confidence * 100)}%`} />
+        )}
+      </div>
+    </section>
   );
 }
 
