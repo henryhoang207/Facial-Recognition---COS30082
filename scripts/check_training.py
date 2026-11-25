@@ -13,6 +13,7 @@ OWNED = [
     "examples",
     "src/training",
     "src/datasets",
+    "src/recognition/attendance",
     "src/recognition/classification",
     "src/recognition/verification",
     "src/recognition/identification",
@@ -20,6 +21,7 @@ OWNED = [
     "tests/test_training.py",
     "tests/test_datasets.py",
     "tests/test_recognition.py",
+    "tests/test_recognition_attendance.py",
     "tests/test_metric_predictor.py",
     "tests/test_recognition_data.py",
     "tests/test_recognition_evaluation.py",
@@ -68,6 +70,7 @@ def main() -> None:
         tests = [
             "tests/test_training.py",
             "tests/test_recognition.py",
+            "tests/test_recognition_attendance.py",
             "tests/test_metric_predictor.py",
             "tests/test_recognition_data.py",
             "tests/test_recognition_evaluation.py",
