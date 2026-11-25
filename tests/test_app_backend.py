@@ -11,6 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app.backend.main import create_app
+from app.backend.gallery import GalleryCache
 from app.backend.pipeline.tracker import Tracker, iou
 
 
@@ -46,6 +47,53 @@ def _face(seed: int) -> np.ndarray:
 
 def _jpeg(frame: np.ndarray) -> bytes:
     return cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
+
+
+@pytest.mark.parametrize(
+    ("accepted", "gallery_size"), [(True, 6), (False, 6), (True, 5)]
+)
+def test_legacy_individual_mlp_requires_six_people(client, accepted, gallery_size):
+    from src.common.face_crop import crop_face
+
+    ctx = client.app.state.ctx
+    frame = _face(1)
+    box = ctx.models.detector.detect(frame)[0]
+    vector = ctx.models.embedder.embed(crop_face(frame, box, 112, 1.0))
+    rows = []
+    for index in range(gallery_size):
+        sample = np.roll(vector, index * 10)
+        person = ctx.repo.create_person(
+            f"Person {index}", None, sample, ctx.models.model_version,
+            ctx.models.embedder.preprocessing_version, 3,
+        )
+        rows.append((int(person.id), person.name, sample))
+    ctx.gallery.load(rows)
+    ctx.models.attendance = SimpleNamespace(
+        frame_count=5, gallery_size=6, threshold=0.5,
+        predict=lambda frames, templates: SimpleNamespace(
+            candidate=str(rows[0][0]), score=0.9, accepted=accepted,
+        ),
+    )
+
+    with client.websocket_connect("/ws/stream?mode=attendance_mlp") as ws:
+        ws.receive_json()
+        for frame_id in range(1, 6):
+            ws.send_bytes(struct.pack(">I", frame_id) + _jpeg(frame))
+            result = ws.receive_json()
+            face = result["faces"][0]
+            assert face["logged"] is (accepted and gallery_size == 6 and frame_id == 5)
+            if frame_id == 5:
+                if gallery_size == 6:
+                    expected = "accepted" if accepted else "rejected"
+                    assert face["attendance_mlp"]["state"] == expected
+                else:
+                    assert face["attendance_mlp"]["state"] == "needs_gallery"
+                if accepted and gallery_size == 6:
+                    assert ws.receive_json()["type"] == "attendance_logged"
+
+    session_id = ctx.attendance.session_id()
+    report = client.get(f"/api/sessions/{session_id}/attendance").json()
+    assert len(report["present"]) == int(accepted and gallery_size == 6)
 
 
 @pytest.fixture
@@ -89,6 +137,14 @@ def test_tracker_keeps_id_and_drops_lost_tracks():
     _, removed = tracker.update([])
     assert removed == [first[0].track_id]
     assert iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0
+
+
+def test_gallery_revisions_do_not_repeat_after_reload():
+    first = GalleryCache(2)
+    first.load([(1, "Alice", np.array([1, 0], dtype=np.float32))])
+    second = GalleryCache(2)
+    second.load([(1, "Alice", np.array([0, 1], dtype=np.float32))])
+    assert first.snapshot()[0] != second.snapshot()[0]
 
 
 def test_health_and_settings(client):

@@ -148,7 +148,7 @@ export function SettingsPage() {
         <table className="table">
           <thead><tr><th>Role</th><th>Type</th><th>Checkpoint</th></tr></thead>
           <tbody>
-            {(["detector", "liveness", "embedder", "emotion", "mask"] as const).map((role) => {
+            {(["detector", "liveness", "embedder", "emotion", "mask", "attendance"] as const).map((role) => {
               const m = health?.models[role] as Record<string, unknown> | null | undefined;
               return (
                 <tr key={role}>
