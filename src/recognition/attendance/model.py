@@ -12,7 +12,7 @@ from torch.nn import functional as F
 
 from src.training import StepResult, TrainingTask
 
-from .features import FEATURES, TOP2_FEATURES, attempt_features
+from .features import FEATURES, TOP2_FEATURES, VARIABLE_GALLERY_FEATURES, attempt_features
 
 
 class AttendanceMLP(TrainingTask):
@@ -47,7 +47,7 @@ class AttendancePredictor:
         self.feature_names = tuple(metadata["feature_names"])
         if (
             metadata.get("task") != "attendance_confidence"
-            or self.feature_names not in (FEATURES, TOP2_FEATURES)
+            or self.feature_names not in (FEATURES, TOP2_FEATURES, VARIABLE_GALLERY_FEATURES)
             or metadata["encoder_sha256"] != encoder_sha256
         ):
             raise ValueError(
@@ -55,6 +55,11 @@ class AttendancePredictor:
             )
         self.frame_count = metadata["frame_count"]
         self.gallery_size = metadata["gallery_size"]
+        if self.feature_names == VARIABLE_GALLERY_FEATURES:
+            if self.gallery_size is not None:
+                raise ValueError("variable-gallery checkpoint must not require a fixed gallery size")
+        elif type(self.gallery_size) is not int or self.gallery_size < 2:
+            raise ValueError("legacy checkpoint must declare its fixed gallery size")
         self.threshold = saved["threshold"]
         if not isfinite(self.threshold):
             raise ValueError("attendance threshold must be finite")
@@ -67,15 +72,16 @@ class AttendancePredictor:
     def predict(
         self, frames: np.ndarray, templates: Mapping[str, np.ndarray]
     ) -> AttendanceDecision:
-        if len(frames) != self.frame_count or len(templates) != self.gallery_size:
-            raise ValueError(
-                "frame count and gallery size must match the trained protocol"
-            )
+        if len(frames) != self.frame_count:
+            raise ValueError("frame count must match the trained protocol")
+        if not templates or (self.gallery_size is not None and len(templates) != self.gallery_size):
+            raise ValueError("gallery does not match the checkpoint protocol")
         identities = sorted(templates)
         winner, features = attempt_features(
             frames,
             np.stack([templates[name] for name in identities]),
             include_top2_gap=self.feature_names == TOP2_FEATURES,
+            include_gallery_size=self.gallery_size is None,
         )
         score = self.score(features)
         return AttendanceDecision(identities[winner], score, score >= self.threshold)

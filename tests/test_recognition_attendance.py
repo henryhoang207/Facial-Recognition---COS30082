@@ -13,7 +13,12 @@ from src.recognition.attendance.config import (
     YouTubeFacesConfig,
 )
 from src.recognition.attendance.evaluate_webcam import summarize
-from src.recognition.attendance.features import attempt_features, features_from_scores
+from src.recognition.attendance.features import (
+    VARIABLE_GALLERY_FEATURES,
+    attempt_features,
+    features_from_scores,
+)
+from src.recognition.attendance.model import AttendanceMLP, AttendancePredictor
 from src.recognition.attendance.prepare import AttemptPreparer
 from src.recognition.attendance.prepare_vidtimit import VidTIMITPreparer
 from src.recognition.attendance.prepare_youtube_faces import YouTubeFacesPreparer
@@ -40,6 +45,41 @@ def test_top2_gap_uses_the_same_runner_up_across_the_whole_window():
     assert np.array_equal(original, extended[:-1])
     assert extended[3] == pytest.approx(0.1)
     assert extended[-1] == pytest.approx(0.4)
+
+
+def test_single_enrollment_has_no_runner_up():
+    winner, features = features_from_scores(
+        np.array([[0.8], [0.6]]), include_gallery_size=True
+    )
+    assert winner == 0
+    assert features == pytest.approx([0.7, 0.6, 0.1, 0, 1, 0, 0])
+
+
+def test_variable_gallery_checkpoint_accepts_new_enrollments_without_reload(tmp_path):
+    path = tmp_path / "attendance.pt"
+    model = AttendanceMLP(4, len(VARIABLE_GALLERY_FEATURES))
+    torch.save({
+        "metadata": {
+            "task": "attendance_confidence",
+            "encoder_sha256": "test-encoder",
+            "feature_names": VARIABLE_GALLERY_FEATURES,
+            "frame_count": 5,
+            "gallery_size": None,
+            "hidden_dim": 4,
+        },
+        "task": model.state_dict(),
+        "threshold": 0,
+    }, path)
+    predictor = AttendancePredictor(path, encoder_sha256="test-encoder")
+    embeddings = np.eye(129, dtype=np.float32)
+    frames = np.repeat(embeddings[:1], 5, axis=0)
+    with pytest.raises(ValueError, match="gallery"):
+        predictor.predict(frames, {})
+    for size in (1, 5, 6, 7, 129):
+        templates = {str(i): vector for i, vector in enumerate(embeddings[:size])}
+        decision = predictor.predict(frames, templates)
+        assert decision.candidate == "0"
+        assert decision.accepted
 
 
 def test_combined_threshold_respects_the_target_on_each_source():

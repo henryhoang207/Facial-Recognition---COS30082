@@ -238,7 +238,11 @@ def evaluate_rosters(records, config, checkpoints, *, calibration_modes=None):
         if predictor.feature_names != FEATURES:
             model_values = np.asarray(
                 [
-                    [float(row[key]) for key in predictor.feature_names]
+                    [
+                        np.log2(len(json.loads(row["gallery"])))
+                        if key == "log2_gallery_size" else float(row[key])
+                        for key in predictor.feature_names
+                    ]
                     for row in records
                 ],
                 dtype=np.float32,

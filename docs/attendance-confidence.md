@@ -81,6 +81,14 @@ The optional sixth feature is the difference between the two highest mean cosine
 
 The exporter checks the original candidates and five feature values before appending the new column. Checkpoint metadata determines which feature schema inference uses. The fixed-gallery evaluator can score both schemas against the same extended manifest.
 
+### Train for a changing gallery
+
+```powershell
+.venv/Scripts/python.exe -m src.recognition.attendance.train_variable_gallery --configs runs/attendance/video-handoff-01/fixed-vidtimit.yaml runs/attendance/video-handoff-01/fixed-youtube-faces.yaml --output runs/attendance/variable-gallery/fit
+```
+
+Use the resolved video configs from the handoff. The trainer reuses their separate enrollment and probe frames, samples random and hard galleries at each available size, and reports dev and held-out test results by source, size and gallery type. The new checkpoint adds the log of gallery size as a feature. With a single enrollment, the two runner-up gaps are zero. The predictor accepts any nonempty gallery and still requires five frames. Existing checkpoints retain the gallery size they were calibrated for.
+
 ## Train and compare
 
 ```powershell
