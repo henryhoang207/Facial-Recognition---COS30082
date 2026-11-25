@@ -37,7 +37,7 @@ class ArcFaceHead(nn.Module):
     def __init__(
         self,
         num_classes: int,
-        embedding_dim: int = 256,
+        embedding_dim: int = 128,
         margin: float = 0.5,
         scale: float = 64.0,
         seed: int = 42,

@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 
 
 def _unit_vector(value: np.ndarray) -> np.ndarray:
@@ -34,16 +33,6 @@ def _labels(values) -> np.ndarray:
     return np.asarray(result, dtype=bool)
 
 
-def _worker_init(worker_id: int) -> None:
-    """Keep evaluation workers small and compatible with Windows spawn."""
-    import random
-
-    torch.set_num_threads(1)
-    seed = torch.initial_seed() % (2**32)
-    random.seed(seed)
-    np.random.seed(seed)
-
-
 def extract_embeddings(
     model: torch.nn.Module,
     frame: pd.DataFrame,
@@ -51,13 +40,17 @@ def extract_embeddings(
     device,
     batch_size: int = 128,
     num_workers: int = 0,
+    *,
+    prefetch_factor: int = 2,
+    pin_memory: bool = True,
+    require_bboxes: bool = False,
 ) -> dict[str, np.ndarray]:
     """Evaluate each path once, return unit FP32 vectors, and restore module modes.
 
     The model must already be on ``device``. FaceDataset supplies the shared,
     deterministic evaluation crop; no identity classifier is called here.
     """
-    from .data import FaceDataset
+    from .data import make_loader
 
     if batch_size < 1 or num_workers < 0:
         raise ValueError("batch_size must be positive and num_workers nonnegative.")
@@ -68,22 +61,17 @@ def extract_embeddings(
         unique["label"] = pd.factorize(unique["identity_id"], sort=True)[0]
     if unique.empty:
         return {}
-    dataset = FaceDataset(unique, Path(data_root), train=False, seed=42)
     device = torch.device(device)
-    options = dict(
+    loader = make_loader(
+        unique,
+        data_root,
         batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=device.type == "cuda",
+        pin_memory=pin_memory and device.type == "cuda",
+        prefetch_factor=prefetch_factor,
+        persistent_workers=False,
+        require_bboxes=require_bboxes,
     )
-    if num_workers:
-        options.update(
-            multiprocessing_context="spawn",
-            persistent_workers=True,
-            prefetch_factor=2,
-            worker_init_fn=_worker_init,
-        )
-    loader = DataLoader(dataset, **options)
     modes = [(module, module.training) for module in model.modules()]
     embeddings = {}
     try:
@@ -246,6 +234,10 @@ def evaluate_probe(
     device,
     batch_size: int = 128,
     num_workers: int = 0,
+    *,
+    prefetch_factor: int = 2,
+    pin_memory: bool = True,
+    require_bboxes: bool = False,
 ) -> dict:
     """Measure the fixed train-only curriculum probe without changing model state."""
     columns = ["anchor", "positive", "negative"]
@@ -273,7 +265,15 @@ def evaluate_probe(
             raise ValueError("Probe negatives must have a different identity.")
     selected = known.loc[sorted(paths)].reset_index(drop=True)
     embeddings = extract_embeddings(
-        model, selected, data_root, device, batch_size, num_workers
+        model,
+        selected,
+        data_root,
+        device,
+        batch_size,
+        num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        require_bboxes=require_bboxes,
     )
     anchors = np.stack([embeddings[str(p)] for p in probe_triplets["anchor"]])
     positives = np.stack([embeddings[str(p)] for p in probe_triplets["positive"]])

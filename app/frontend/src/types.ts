@@ -50,6 +50,12 @@ export interface Face {
   };
 }
 
+export interface GestureResult {
+  status: "detected" | "no_hand" | "unavailable";
+  label: string | null;
+  confidence: number | null;
+}
+
 export interface StreamResult {
   type: "result";
   frame_id: number;
@@ -57,6 +63,7 @@ export interface StreamResult {
   frame_size: [number, number];
   latency_ms: Record<string, number>;
   faces: Face[];
+  gesture?: GestureResult;
 }
 
 export interface AttendanceEvent {

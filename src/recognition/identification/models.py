@@ -46,7 +46,7 @@ class IResNet34(nn.Module):
     normalization always execute in FP32. No pretrained weights are loaded.
     """
 
-    def __init__(self, embedding_dim: int = 256, dropout: float = 0.0) -> None:
+    def __init__(self, embedding_dim: int = 128, dropout: float = 0.0) -> None:
         super().__init__()
         if embedding_dim < 1:
             raise ValueError("embedding_dim must be positive")
@@ -96,6 +96,6 @@ class IResNet34(nn.Module):
             return F.normalize(features.float(), p=2, dim=1, eps=1e-12)
 
 
-def iresnet34(embedding_dim: int = 256, dropout: float = 0.0) -> IResNet34:
+def iresnet34(embedding_dim: int = 128, dropout: float = 0.0) -> IResNet34:
     """Construct the common randomly initialized recognition encoder."""
     return IResNet34(embedding_dim=embedding_dim, dropout=dropout)

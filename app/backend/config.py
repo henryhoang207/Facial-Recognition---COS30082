@@ -26,6 +26,7 @@ class ModelsConfig(BaseModel):
     emotion: ModelSpec
     mask: ModelSpec | None = None  # tính năng cá nhân (Nam Khánh); không có thì tab Mask báo chưa cấu hình
     attendance: ModelSpec | None = None
+    gesture: ModelSpec | None = None
 
 
 class Thresholds(BaseModel):

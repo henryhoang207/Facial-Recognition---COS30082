@@ -64,4 +64,4 @@ async def stream(websocket: WebSocket, mode: str = "pipeline"):
     except WebSocketDisconnect:
         pass
     finally:
-        pipeline.close()
+        await run_in_threadpool(pipeline.close)

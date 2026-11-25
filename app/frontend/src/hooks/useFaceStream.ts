@@ -24,6 +24,7 @@ export function useFaceStream(
   onEventRef.current = onEvent;
 
   useEffect(() => {
+    setResult(null);
     if (!active) {
       setStatus("paused");
       return;
@@ -60,6 +61,7 @@ export function useFaceStream(
       setStatus(frameId ? "reconnecting" : "connecting");
       socket = new WebSocket(wsUrl(mode));
       socket.onmessage = (message) => {
+        if (closed) return;
         const data = JSON.parse(message.data);
         if (data.type === "ready") {
           setReady(data);
@@ -84,6 +86,7 @@ export function useFaceStream(
       socket.onclose = () => {
         if (closed) return;
         inFlight = false;
+        setResult(null);
         setStatus("reconnecting");
         retry = window.setTimeout(connect, 1000);
       };

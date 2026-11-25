@@ -30,7 +30,7 @@ from torch import nn
 from src.training import Trainer, TrainingPolicy
 
 from .config import ExperimentConfig
-from .data import PKBatchSampler, PreparedData, make_loader
+from .data import PKBatchSampler, PreparedData, bbox_array, make_loader
 from .embedding_evaluation import (
     evaluate_identification,
     evaluate_probe,
@@ -188,6 +188,7 @@ def _optimizer(model: nn.Module, head: nn.Module | None, config: ExperimentConfi
         lr=config.learning_rate,
         betas=(0.9, 0.999),
         eps=1e-8,
+        fused=True if config.fused_adamw else None,
     )
     return optimizer, trainable
 
@@ -317,7 +318,7 @@ class MetricTrainingPolicy(TrainingPolicy):
                 self.config.data_root,
                 trainer.device,
                 batch_size=self.config.evaluation_batch_size,
-                num_workers=self.config.num_workers,
+                **self.config.evaluation_loader_options,
             )
             row.update({f"probe_{key}": value for key, value in probe.items()})
             ready = (
@@ -401,9 +402,15 @@ def _resume_checkpoint(run_dir: Path) -> Path | None:
 
 
 def train_run(
-    config: ExperimentConfig, prepared: PreparedData, margin: float, seed: int = 42
+    config: ExperimentConfig,
+    prepared: PreparedData,
+    margin: float,
+    seed: int = 42,
 ) -> dict:
     """Run one margin through the shared Trainer with a metric-learning task."""
+    if config.require_bboxes:
+        for frame in (prepared.train, prepared.dev, prepared.test):
+            bbox_array(frame, required=True)
     device = configure_runtime(config)
     seed_everything(seed)
     run_dir = config.output_dir / "runs" / f"margin_{margin:.1f}_seed_{seed}"
@@ -419,6 +426,7 @@ def train_run(
         _require_compatible_artifact(best, compatibility, signature, best_path)
         return result
     last = _resume_checkpoint(run_dir)
+    initial_encoder_sha256 = None
     if last is not None:
         if not config.resume:
             raise FileExistsError(
@@ -426,12 +434,15 @@ def train_run(
             )
         previous = _load_checkpoint(last, torch.device("cpu"))
         _require_compatible_artifact(previous, compatibility, signature, last)
+        initial_encoder_sha256 = previous["metadata"]["initial_encoder_sha256"]
         del previous
 
     model = IResNet34(embedding_dim=config.embedding_dim).to(device)
     initial_hash = hashlib.sha256()
     for tensor in model.state_dict().values():
         initial_hash.update(tensor.detach().cpu().numpy().tobytes())
+    if config.channels_last:
+        model.to(memory_format=torch.channels_last)
     task = MetricLearningTask(model, config, len(prepared.train_labels), margin, seed)
     optimizer, _ = _optimizer(task.model, task.head, config)
     sampler = PKBatchSampler(
@@ -448,6 +459,10 @@ def train_run(
         train=True,
         batch_sampler=sampler,
         num_workers=config.num_workers,
+        prefetch_factor=config.prefetch_factor,
+        pin_memory=config.pin_memory,
+        persistent_workers=config.persistent_workers,
+        require_bboxes=config.require_bboxes,
         seed=seed,
     )
     dev_frame = _evaluation_frame(prepared.dev, prepared.dev_pairs)
@@ -464,7 +479,7 @@ def train_run(
         "embedding_dim": config.embedding_dim,
         "preprocessing": dict(METRIC_PREPROCESSING),
         "signature": signature,
-        "initial_encoder_sha256": initial_hash.hexdigest(),
+        "initial_encoder_sha256": initial_encoder_sha256 or initial_hash.hexdigest(),
         "environment_compatibility": compatibility,
         "data": prepared.metadata,
     }
@@ -476,7 +491,7 @@ def train_run(
             config.data_root,
             current_device,
             batch_size=config.evaluation_batch_size,
-            num_workers=config.num_workers,
+            **config.evaluation_loader_options,
         )
         metrics = verification_metrics(
             embeddings, prepared.dev_pairs, target_fmr=config.target_fmr
@@ -490,21 +505,6 @@ def train_run(
             "dev_fmr": float(metrics["fmr"]),
         }
 
-    run_dir.mkdir(parents=True, exist_ok=True)
-    write_json(
-        run_dir / "config.json",
-        {
-            **config.to_dict(),
-            "margin": margin,
-            "run_seed": seed,
-            "signature": signature,
-            "initial_encoder_sha256": initial_hash.hexdigest(),
-            "data": prepared.metadata,
-            "environment": environment_details(device),
-            "environment_compatibility": compatibility,
-            "training_contract": "shared-trainer-v1",
-        },
-    )
     policy = MetricTrainingPolicy(config, prepared, run_dir)
     trainer = Trainer(
         task,
@@ -514,6 +514,20 @@ def train_run(
         metadata=metadata,
         evaluator=evaluate,
         policy=policy,
+    )
+    write_json(
+        run_dir / "config.json",
+        {
+            **config.to_dict(),
+            "margin": margin,
+            "run_seed": seed,
+            "signature": signature,
+            "initial_encoder_sha256": trainer.metadata["initial_encoder_sha256"],
+            "data": prepared.metadata,
+            "environment": environment_details(device),
+            "environment_compatibility": compatibility,
+            "training_contract": "shared-trainer-v1",
+        },
     )
     fit = trainer.fit(loader, resume=last)
     history = fit.history
@@ -544,7 +558,7 @@ def train_run(
         config.data_root,
         device,
         batch_size=config.evaluation_batch_size,
-        num_workers=config.num_workers,
+        **config.evaluation_loader_options,
     )
     save_verification_graphs(
         embeddings,
@@ -594,7 +608,7 @@ def train_run(
         "best_checkpoint": str(weights_dir / "best.pt"),
         "embedding_checkpoint": str(weights_dir / "embedding.pt"),
         "history_path": str(run_dir / "history.csv"),
-        "initial_encoder_sha256": initial_hash.hexdigest(),
+        "initial_encoder_sha256": trainer.metadata["initial_encoder_sha256"],
     }
     write_json(result_path, result)
     del trainer, fit, loader, task, model, optimizer, best, export
@@ -604,7 +618,10 @@ def train_run(
     return result
 
 
-def run_experiment(config: ExperimentConfig, prepared: PreparedData) -> pd.DataFrame:
+def run_experiment(
+    config: ExperimentConfig,
+    prepared: PreparedData,
+) -> pd.DataFrame:
     """Train one configured margin and seed, calibrating its threshold on dev."""
     config.validate()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -728,7 +745,7 @@ def evaluate_selected(
             config.data_root,
             device,
             batch_size=config.evaluation_batch_size,
-            num_workers=config.num_workers,
+            **config.evaluation_loader_options,
         )
         test = extract_embeddings(
             model,
@@ -736,7 +753,7 @@ def evaluate_selected(
             config.data_root,
             device,
             batch_size=config.evaluation_batch_size,
-            num_workers=config.num_workers,
+            **config.evaluation_loader_options,
         )
         verification = verification_metrics(
             test,

@@ -50,6 +50,11 @@ class TeamSource(Settings):
     min_face_area_fraction: float = Field(gt=0, lt=1)
 
 
+class HandGesturesSource(Settings):
+    root: Path
+    review: Path | None = None
+
+
 class PreparationConfig(Settings):
     output_dir: Path
     seed: int = Field(ge=0, le=2**32 - 1)
@@ -58,3 +63,4 @@ class PreparationConfig(Settings):
     liveness: LivenessSource
     emotion: EmotionSource
     team: TeamSource
+    hand_gestures: HandGesturesSource | None = None

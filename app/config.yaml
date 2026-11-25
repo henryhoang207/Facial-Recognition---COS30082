@@ -19,6 +19,11 @@ models:
   emotion:
     type: emotion_gru      # emotion_gru | dummy
     path: model/Emotion/emotionv4.pt
+  gesture:
+    type: alphabet_mlp
+    path: artifacts/hand_gestures/alphabet
+    hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
+    device: auto
   mask:                    # tính năng cá nhân (Nam Khánh): có / không đeo khẩu trang
     type: mask             # mask | dummy; thiếu checkpoint thì app vẫn chạy, tab Mask bị tắt
     path: model/Mask/mask_mobilenetv3s.pt

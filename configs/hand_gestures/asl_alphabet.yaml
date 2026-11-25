@@ -1,0 +1,33 @@
+dataset_root: ../../data/ASL
+cache_dir: ../../data/hand_gestures/alphabet
+artifacts_dir: ../../artifacts/hand_gestures/alphabet
+hand_model: ../../artifacts/hand_gestures/assets/hand_landmarker.task
+seed: 42
+landmark_device: gpu
+extraction_workers: 4
+flip_probability: 0.5
+rotation_degrees: 8
+jitter_std: 0.008
+dropout: 0.15
+xgb_rounds: 100
+xgb_patience: 80
+training:
+  epochs: 100
+  batch_size: 512
+  lr: 0.0003
+  weight_decay: 0.0005
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 5
+  eta_min: 0.00001
+  seed: 42
+  device: cuda
+  amp: true
+  amp_dtype: bf16
+  deterministic: true
+  num_workers: 0
+  monitor: val_macro_f1
+  mode: max
+  patience: 80
+  clip_grad_norm: 1.0
+  progress: false

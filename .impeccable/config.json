@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "app/frontend/src/styles.css"
+        ],
+        "createdAt": "2026-11-21T19:47:36.287Z",
+        "reason": "Agent: CameraView renders four corner markers around detected faces. The 4px top corners identify the selected face. All six flagged declarations predate the ASL card in commit 25d28702."
+      }
+    ]
+  }
+}

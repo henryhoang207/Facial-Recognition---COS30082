@@ -1,6 +1,7 @@
 """Backend tests with dummy models: python -m pytest tests/test_app_backend.py"""
 
 import struct
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -187,6 +188,62 @@ def test_stream_recognises_and_logs_once(client):
     assert [row["name"] for row in report["present"]] == ["Alice"]
     csv_text = client.get(f"/api/sessions/{session_id}/export.csv").text
     assert "Alice" in csv_text
+
+
+def test_live_gesture_stream_without_a_face(client, monkeypatch):
+    lifecycle = []
+    detected = {"status": "detected", "label": "A", "confidence": 0.9}
+    no_hand = {"status": "no_hand", "label": None, "confidence": None}
+
+    @contextmanager
+    def open_stream():
+        lifecycle.append("opened")
+        results = iter((detected, no_hand, no_hand, no_hand))
+
+        def predict(frame):
+            assert frame.shape == (240, 320, 3)
+            return next(results)
+
+        try:
+            yield predict
+        finally:
+            lifecycle.append("closed")
+
+    models = client.app.state.ctx.models
+    monkeypatch.setattr(models, "gesture", SimpleNamespace(open_stream=open_stream))
+    monkeypatch.setattr(models.detector, "detect", lambda frame, score=None: [])
+    frame = _jpeg(np.zeros((240, 320, 3), dtype=np.uint8))
+    with client.websocket_connect("/ws/stream?mode=pipeline") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        for frame_id, expected in enumerate((detected, no_hand, no_hand, no_hand)):
+            ws.send_bytes(struct.pack(">I", frame_id) + frame)
+            result = ws.receive_json()
+            assert result["type"] == "result" and result["frame_id"] == frame_id
+            assert result["gesture"] == expected
+            assert result["faces"] == []
+        assert lifecycle == ["opened"]
+    assert lifecycle == ["opened", "closed"]
+    session_id = client.get("/api/health").json()["active_session_id"]
+    report = client.get(f"/api/sessions/{session_id}/attendance").json()
+    assert report["present"] == [] and report["stats"]["spoof_blocked"] == 0
+
+
+@pytest.mark.parametrize("mode", ["pipeline", "liveness"])
+def test_stream_without_configured_gesture_model(client, mode):
+    frame = _jpeg(_face(1))
+    with client.websocket_connect(f"/ws/stream?mode={mode}") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(struct.pack(">I", 1) + frame)
+        result = ws.receive_json()
+    assert result["faces"]
+    if mode == "pipeline":
+        assert result["gesture"] == {
+            "status": "unavailable",
+            "label": None,
+            "confidence": None,
+        }
+    else:
+        assert "gesture" not in result
 
 
 def test_individual_mlp_uses_the_updated_gallery_and_is_separate_from_live(client):

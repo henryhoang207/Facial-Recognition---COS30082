@@ -4,12 +4,18 @@
 --find-links https://download.pytorch.org/whl/cu130/torch/
 --find-links https://download.pytorch.org/whl/cu130/torchvision/
 
+annotated-doc==0.0.7
+    # via fastapi
 annotated-types==0.8.0
     # via pydantic
 anyio==4.16.0
     # via
+    #   fastapi
     #   httpx
+    #   httpx2
     #   jupyter-server
+    #   starlette
+    #   watchfiles
 appnope==1.0.0 ; sys_platform == 'darwin'
     # via ipykernel
 argon2-cffi==25.1.0
@@ -51,6 +57,8 @@ click==8.5.0
     # via
     #   black
     #   flask
+    #   huggingface-hub
+    #   uvicorn
 cloudpickle==3.1.2
     # via joblib
 colorama==0.4.6 ; sys_platform == 'win32'
@@ -76,10 +84,14 @@ duckdb==1.4.4
     # via -r requirements/../requirements.txt
 executing==2.3.0
     # via stack-data
+fastapi==0.165.0
+    # via -r requirements/../requirements.txt
 fastjsonschema==2.22.3
     # via nbformat
 filelock==4.2.6
-    # via torch
+    # via
+    #   huggingface-hub
+    #   torch
 flask==3.1.3
     # via -r requirements/../requirements.txt
 fonttools==4.68.0
@@ -87,17 +99,35 @@ fonttools==4.68.0
 fqdn==1.6.0
     # via jsonschema
 fsspec==2026.9.0
-    # via torch
+    # via
+    #   huggingface-hub
+    #   torch
 h11==0.16.0
-    # via httpcore
+    # via
+    #   httpcore
+    #   httpcore2
+    #   uvicorn
+hf-xet==1.8.0 ; platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
+httpcore2==2.16.2 ; sys_platform != 'emscripten'
+    # via httpx2
+httptools==0.9.0
+    # via uvicorn
 httpx==0.28.1
     # via jupyterlab
+httpx2==2.16.2
+    # via huggingface-hub
+httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
+    # via httpx2
+huggingface-hub==2.4.0
+    # via timm
 idna==3.20
     # via
     #   anyio
     #   httpx
+    #   httpx2
     #   jsonschema
     #   requests
 iniconfig==2.3.1
@@ -268,9 +298,12 @@ nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
     # via torch
 opencv-python==4.13.0.92
     # via -r requirements/../requirements.txt
+opentelemetry-api==1.45.2
+    # via fastapi
 packaging==26.3
     # via
     #   black
+    #   huggingface-hub
     #   ipykernel
     #   jupyter-events
     #   jupyter-server
@@ -317,7 +350,10 @@ pure-eval==0.2.4
 pycparser==3.12 ; implementation_name != 'PyPy'
     # via cffi
 pydantic==2.12.5
-    # via -r requirements/../requirements.txt
+    # via
+    #   -r requirements/../requirements.txt
+    #   fastapi
+    #   sqlmodel
 pydantic-core==2.41.5
     # via pydantic
 pygments==2.21.0
@@ -338,8 +374,12 @@ python-dateutil==3.0.0
     #   jupyter-client
     #   matplotlib
     #   pandas
+python-dotenv==1.2.4
+    # via uvicorn
 python-json-logger==4.2.0
     # via jupyter-events
+python-multipart==0.0.34
+    # via -r requirements/../requirements.txt
 pytokens==0.4.1
     # via black
 pywinpty==3.1.2 ; os_name == 'nt'
@@ -350,7 +390,10 @@ pywinpty==3.1.2 ; os_name == 'nt'
 pyyaml==6.0.3
     # via
     #   -r requirements/../requirements.txt
+    #   huggingface-hub
     #   jupyter-events
+    #   timm
+    #   uvicorn
 pyzmq==27.2.0
     # via
     #   ipykernel
@@ -379,6 +422,8 @@ rpds-py==2026.9.1
     #   referencing
 ruff==0.15.7
     # via -r requirements/../requirements.txt
+safetensors==0.8.0
+    # via timm
 scikit-learn==1.9.1
     # via -r requirements/../requirements.txt
 scipy==1.18.1
@@ -397,8 +442,14 @@ six==1.17.0
     #   rfc3339-validator
 soupsieve==3.0.4
     # via beautifulsoup4
+sqlalchemy==2.1.9
+    # via sqlmodel
+sqlmodel==0.0.50
+    # via -r requirements/../requirements.txt
 stack-data==0.6.3
     # via ipython
+starlette==1.10.0
+    # via fastapi
 sympy==1.14.0
     # via torch
 terminado==0.18.1
@@ -407,14 +458,19 @@ terminado==0.18.1
     #   jupyter-server-terminals
 threadpoolctl==3.7.0
     # via scikit-learn
+timm==1.0.24
+    # via -r requirements/../requirements.txt
 tinycss2==1.5.1
     # via bleach
 torch==2.10.0+cu130
     # via
     #   -r requirements/../requirements.txt
+    #   timm
     #   torchvision
 torchvision==0.25.0+cu130
-    # via -r requirements/../requirements.txt
+    # via
+    #   -r requirements/../requirements.txt
+    #   timm
 tornado==6.6
     # via
     #   ipykernel
@@ -423,7 +479,9 @@ tornado==6.6
     #   jupyterlab
     #   terminado
 tqdm==4.70.1
-    # via -r requirements/../requirements.txt
+    # via
+    #   -r requirements/../requirements.txt
+    #   huggingface-hub
 traitlets==5.16.1
     # via
     #   ipykernel
@@ -440,18 +498,31 @@ traitlets==5.16.1
     #   nbformat
 triton==3.6.0 ; sys_platform == 'linux'
     # via torch
+truststore==0.10.5 ; sys_platform != 'emscripten'
+    # via
+    #   httpcore2
+    #   httpx2
 typing-extensions==4.16.0
     # via
     #   anyio
     #   beautifulsoup4
+    #   fastapi
+    #   httpx2
+    #   huggingface-hub
     #   jupyter-client
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   referencing
+    #   sqlalchemy
+    #   sqlmodel
+    #   starlette
     #   torch
     #   typing-inspection
 typing-inspection==0.4.4
-    # via pydantic
+    # via
+    #   fastapi
+    #   pydantic
 tzdata==2026.6
     # via
     #   arrow
@@ -461,6 +532,12 @@ uri-template==1.3.0
     # via jsonschema
 urllib3==2.8.0
     # via requests
+uvicorn==0.54.0
+    # via -r requirements/../requirements.txt
+uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+    # via uvicorn
+watchfiles==1.3.0
+    # via uvicorn
 wcwidth==0.9.4
     # via prompt-toolkit
 webcolors==25.10.0
@@ -471,5 +548,7 @@ webencodings==0.6.1
     #   tinycss2
 websocket-client==1.9.2
     # via jupyter-server
+websockets==17.4
+    # via uvicorn
 werkzeug==3.1.9
     # via flask

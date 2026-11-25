@@ -29,3 +29,6 @@ team:
   detector_min_neighbors: 6
   detector_min_size: 40
   min_face_area_fraction: 0.05
+hand_gestures:
+  root: ../data/SignAlphaSet/ASL_dynamic
+  review: hand_gestures/asl_dynamic_review.csv

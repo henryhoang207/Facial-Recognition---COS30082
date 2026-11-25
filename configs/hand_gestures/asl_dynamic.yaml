@@ -1,0 +1,32 @@
+dataset_root: ../../data/SignAlphaSet/ASL_dynamic
+manifest: ../../data/manifests/hand_gestures/clips.csv
+cache_dir: ../../data/hand_gestures/landmarks
+artifacts_dir: ../../artifacts/hand_gestures
+hand_model: ../../artifacts/hand_gestures/assets/hand_landmarker.task
+pose_model: ../../artifacts/hand_gestures/assets/pose_landmarker_lite.task
+sample_fps: 20
+seed: 42
+sequence_length: 32
+include_body: false
+static_frames: 8
+min_hand_coverage: 0.8
+max_hand_gap_sec: 0.1
+flip_train: true
+xgb_rounds: 160
+training:
+  epochs: 60
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  scheduler: none
+  seed: 42
+  device: cpu
+  amp: false
+  deterministic: true
+  num_workers: 0
+  monitor: val_clip_macro_f1
+  mode: max
+  patience: 12
+  clip_grad_norm: 1.0
+  progress: false
