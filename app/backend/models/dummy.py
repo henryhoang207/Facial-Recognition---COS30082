@@ -47,6 +47,23 @@ class PixelEmbedder:
         return (vector / (np.linalg.norm(vector) + 1e-12)).astype(np.float32)
 
 
+class DummyMask:
+    """Giả lập model khẩu trang: nửa dưới khuôn mặt sáng và đều màu -> "mask"."""
+
+    img_size, crop_scale, threshold = 224, 1.3, 0.5
+    labels = ["mask", "no_mask"]
+    arch = "dummy"
+
+    def predict(self, face: np.ndarray) -> tuple[str, float]:
+        lower = cv2.cvtColor(face[face.shape[0] // 2 :], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        brightness, spread = lower.mean() / 255.0, lower.std() / 128.0
+        prob = float(np.clip(brightness * 1.4 - spread, 0.0, 1.0))
+        return ("mask" if prob >= self.threshold else "no_mask"), prob
+
+    def predict_frame(self, frame: np.ndarray, box: Box) -> tuple[str, float]:
+        return self.predict(crop_face(frame, box, self.img_size, self.crop_scale))
+
+
 class DummyEmotion:
     img_size, crop_scale = 224, 1.0
     labels = EMOTION_LABELS

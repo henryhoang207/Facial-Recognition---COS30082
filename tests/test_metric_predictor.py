@@ -10,6 +10,7 @@ import torch
 from torch import nn
 
 from app.backend.config import AppConfig
+from app.backend.config import ModelSpec as AppModelSpec
 from app.backend.models.registry import build_embedder
 from src.recognition.identification import predictor
 from src.recognition.verification import VerificationConfig
@@ -116,6 +117,39 @@ def test_common_checkpoint_embeds_bgr_crop_and_ignores_loss_head(
     assert embedder.payload["val_metrics"]["dev_threshold"] == 0.4
 
 
+def test_faceguard_loads_128_dimensional_model_b_with_checkpoint_threshold(
+    tmp_path, common_payload
+):
+    common_payload["metadata"].update(method="arcface", embedding_dim=128)
+    common_payload["metadata"]["experiment_config"].update(
+        method="arcface", embedding_dim=128
+    )
+    common_payload["task"] = {
+        f"model.{key}": value for key, value in TinyEncoder(128).state_dict().items()
+    }
+    checkpoint = tmp_path / "Model_B.pt"
+    torch.save(common_payload, checkpoint)
+    spec = AppModelSpec(type="metric", path=str(checkpoint))
+    config = AppConfig.model_validate(
+        {
+            "models": {
+                "detector": {"type": "center"},
+                "liveness": {"type": "dummy"},
+                "embedder": spec,
+                "emotion": {"type": "dummy"},
+            }
+        }
+    )
+
+    embedder, threshold = build_embedder(config, spec)
+    vector = embedder.embed(np.zeros((112, 112, 3), dtype=np.uint8))
+
+    assert embedder.embedding_dim == 128
+    assert vector.shape == (128,)
+    assert np.linalg.norm(vector) == pytest.approx(1.0, abs=1e-5)
+    assert threshold == 0.4
+
+
 def test_training_checkpoint_requires_explicit_internal_opt_in(
     tmp_path, common_payload
 ):
@@ -127,40 +161,6 @@ def test_training_checkpoint_requires_explicit_internal_opt_in(
     encoder, payload = predictor.load_metric_encoder(checkpoint, allow_training=True)
     assert isinstance(encoder, TinyEncoder)
     assert payload["checkpoint_kind"] == "training"
-
-
-def test_128_dimensional_checkpoint_round_trip(tmp_path, common_payload):
-    common_payload["metadata"]["embedding_dim"] = 128
-    common_payload["metadata"]["experiment_config"]["embedding_dim"] = 128
-    common_payload["task"] = {
-        f"model.{name}": value for name, value in TinyEncoder(128).state_dict().items()
-    }
-    checkpoint = tmp_path / "embedding128.pt"
-    torch.save(common_payload, checkpoint)
-    embedder = predictor.MetricEmbedder(checkpoint)
-    vector = embedder.embed(np.zeros((112, 112, 3), dtype=np.uint8))
-    assert vector.shape == (128,)
-    assert np.linalg.norm(vector) == pytest.approx(1, abs=1e-5)
-
-
-def test_app_uses_metric_checkpoint_validation_threshold(tmp_path, common_payload):
-    checkpoint = tmp_path / "Model_B.pt"
-    torch.save(common_payload, checkpoint)
-    config = AppConfig.model_validate(
-        {
-            "models": {
-                "detector": {"type": "center"},
-                "liveness": {"type": "dummy"},
-                "emotion": {"type": "dummy"},
-                "embedder": {"type": "metric", "path": str(checkpoint)},
-            },
-        }
-    )
-
-    embedder, threshold = build_embedder(config, config.models.embedder)
-
-    assert isinstance(embedder, predictor.MetricEmbedder)
-    assert threshold == pytest.approx(0.4)
 
 
 def test_encoder_only_export_matches_dataset_normalization(tmp_path, common_payload):

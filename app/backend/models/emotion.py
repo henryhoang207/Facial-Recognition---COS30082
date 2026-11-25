@@ -1,6 +1,6 @@
-"""Load CNN + GRU emotion checkpoints for live inference.
+"""Load MobileNet + GRU emotion checkpoints for live inference.
 
-The predictor carries the GRU hidden state forward per face track.
+The predictor carries GRU hidden state forward per face track.
 """
 
 from __future__ import annotations
@@ -26,17 +26,9 @@ class EmotionNet(nn.Module):
                 "mobilenetv4_conv_small", pretrained=False, num_classes=0
             )
             feature_dim = self.backbone.head_hidden_size
-        elif model_name == "efficientnet_b0_gru":
-            backbone = torchvision.models.efficientnet_b0(weights=None)
-            self.backbone = backbone.features
-            feature_dim = backbone.classifier[-1].in_features
-        elif model_name in ("", "mobilenet_v3_large_gru", "mobilenetv3_gru"):
-            backbone = torchvision.models.mobilenet_v3_large(weights=None)
-            self.backbone = backbone.features
-            feature_dim = backbone.classifier[0].in_features
         else:
-            raise ValueError(f"unsupported emotion checkpoint model: {model_name!r}")
-
+            self.backbone = torchvision.models.mobilenet_v3_large().features
+            feature_dim = 960
         self.gru = nn.GRU(feature_dim, hidden, batch_first=True)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, num_classes))
 
@@ -53,9 +45,7 @@ class EmotionGRUPredictor:
         self.device = torch.device(device)
         payload = torch.load(Path(checkpoint), map_location="cpu", weights_only=True)
         config = payload["config"]
-        model_name = config.get("model", "")
-        legacy_v3 = model_name == "mobilenetv3_gru" and "task" not in config
-        if config.get("task") != "emotion" and not legacy_v3:
+        if config.get("task") != "emotion":
             raise ValueError("checkpoint is not an emotion model")
         self.labels: list[str] = list(config["class_names"])
         self.img_size = int(config.get("image_size", 224))
@@ -66,7 +56,7 @@ class EmotionGRUPredictor:
             len(self.labels),
             int(config.get("gru_hidden_size", 128)),
             float(config.get("head_dropout", 0.3)),
-            model_name=model_name,
+            model_name=config.get("model", ""),
         )
         self.model.load_state_dict(payload["model"], strict=True)
         self.model.to(self.device).eval()

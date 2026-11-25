@@ -32,7 +32,7 @@ export function SettingsPage() {
   if (!draft || !settings) return <Empty>Loading settings…</Empty>;
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
-  const setThreshold = (key: "recognition" | "liveness", value: number | null) =>
+  const setThreshold = (key: "recognition" | "liveness" | "mask", value: number | null) =>
     setDraft({ ...draft, thresholds: { ...draft.thresholds, [key]: value } });
 
   const save = async () => {
@@ -92,6 +92,16 @@ export function SettingsPage() {
           checkpointValue={Number(health?.models.liveness?.checkpoint_threshold ?? settings.effective.liveness)}
           onChange={(v) => setThreshold("liveness", v)}
         />
+        {health?.models.mask && settings.effective.mask !== null && (
+          <ThresholdField
+            label="Mask (Individual)"
+            hint="Probability of a mask needed to show “Mask”"
+            value={draft.thresholds.mask}
+            fallback={settings.effective.mask}
+            checkpointValue={Number(health.models.mask.checkpoint_threshold ?? settings.effective.mask)}
+            onChange={(v) => setThreshold("mask", v)}
+          />
+        )}
       </section>
 
       <section className="section">
@@ -138,13 +148,13 @@ export function SettingsPage() {
         <table className="table">
           <thead><tr><th>Role</th><th>Type</th><th>Checkpoint</th></tr></thead>
           <tbody>
-            {(["detector", "liveness", "embedder", "emotion"] as const).map((role) => {
-              const m = health?.models[role] as Record<string, unknown> | undefined;
+            {(["detector", "liveness", "embedder", "emotion", "mask", "attendance"] as const).map((role) => {
+              const m = health?.models[role] as Record<string, unknown> | null | undefined;
               return (
                 <tr key={role}>
                   <td className="strong">{role}</td>
-                  <td>{String(m?.type ?? "–")}</td>
-                  <td className="num muted break">{String(m?.path ?? "built-in")}</td>
+                  <td>{m ? String(m.type ?? "–") : <span className="muted">not loaded</span>}</td>
+                  <td className="num muted break">{m ? String(m.path ?? "built-in") : "–"}</td>
                 </tr>
               );
             })}

@@ -43,17 +43,26 @@ class YuNetDetector:
 
     def __init__(self, path: Path, score_threshold: float = 0.8):
         self.path = path
+        self.score_threshold = score_threshold
         self.detector = cv2.FaceDetectorYN.create(
             str(path), "", (320, 320), score_threshold, 0.3, 50
         )
         self._size: tuple[int, int] | None = None
 
-    def detect(self, frame: np.ndarray) -> list[Box]:
+    def detect(self, frame: np.ndarray, score_threshold: float | None = None) -> list[Box]:
         height, width = frame.shape[:2]
         if self._size != (width, height):
             self.detector.setInputSize((width, height))
             self._size = (width, height)
-        _, faces = self.detector.detect(frame)
+        if score_threshold is None:
+            _, faces = self.detector.detect(frame)
+        else:
+            # mặt đeo khẩu trang có score thấp hơn: hạ ngưỡng cho lần detect này rồi trả lại
+            self.detector.setScoreThreshold(score_threshold)
+            try:
+                _, faces = self.detector.detect(frame)
+            finally:
+                self.detector.setScoreThreshold(self.score_threshold)
         if faces is None:
             return []
         return _by_area([_clip_box(*face[:4], width, height) for face in faces])
@@ -66,7 +75,7 @@ class HaarDetector:
         cascade = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
         self.detector = cv2.CascadeClassifier(str(cascade))
 
-    def detect(self, frame: np.ndarray) -> list[Box]:
+    def detect(self, frame: np.ndarray, score_threshold: float | None = None) -> list[Box]:
         height, width = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.detector.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
@@ -78,7 +87,7 @@ class CenterDetector:
 
     name = "center"
 
-    def detect(self, frame: np.ndarray) -> list[Box]:
+    def detect(self, frame: np.ndarray, score_threshold: float | None = None) -> list[Box]:
         height, width = frame.shape[:2]
         side = int(min(width, height) * 0.5)
         x1, y1 = (width - side) // 2, (height - side) // 2

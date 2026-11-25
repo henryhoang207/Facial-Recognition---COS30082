@@ -12,10 +12,10 @@ models:
     score_threshold: 0.8
   liveness:
     type: liveness         # liveness | dummy
-    path: model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
+    path: model/Anti-spoofing/Liveness.pt
   embedder:
-    type: metric           # metric (Model B) | recognition (Model A/C) | dummy
-    path: model/Classification/Model_B.pt
+    type: recognition      # recognition (Model A/C) | metric | dummy
+    path: model/Classification/Model_A.pt
   emotion:
     type: emotion_gru      # emotion_gru | dummy
     path: model/Emotion/emotionv4.pt
@@ -24,10 +24,18 @@ models:
     path: artifacts/hand_gestures/alphabet
     hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
     device: auto
+  mask:                    # tính năng cá nhân (Nam Khánh): có / không đeo khẩu trang
+    type: mask             # mask | dummy; thiếu checkpoint thì app vẫn chạy, tab Mask bị tắt
+    path: model/Mask/mask_mobilenetv3s.pt
+    detector_score: 0.6    # YuNet bỏ sót mặt đeo khẩu trang ở 0.8, nên hạ khi chạy mode mask
+  attendance:
+    type: mlp
+    path: model/Attendance/MLP-variable.pt
 
 thresholds:
-  recognition: null        # null = threshold trong checkpoint embedder
+  recognition: null        # null = val_score_threshold trong checkpoint embedder
   liveness: null           # null = threshold trong checkpoint liveness
+  mask: null               # null = threshold trong checkpoint khẩu trang (0.5)
 
 pipeline:
   max_faces: 5

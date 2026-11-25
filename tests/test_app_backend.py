@@ -12,6 +12,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app.backend.main import create_app
+from app.backend.gallery import GalleryCache
 from app.backend.pipeline.tracker import Tracker, iou
 
 
@@ -22,6 +23,7 @@ def _config(tmp_path: Path) -> Path:
             "liveness": {"type": "dummy"},
             "embedder": {"type": "dummy", "dim": 64},
             "emotion": {"type": "dummy"},
+            "mask": {"type": "dummy", "detector_score": 0.6},
         },
         "pipeline": {"stable_frames": 3, "smooth_window": 4, "spoof_cooldown_s": 60},
         "registration": {"min_face_pixels": 10, "min_valid_frames": 3},
@@ -48,6 +50,53 @@ def _jpeg(frame: np.ndarray) -> bytes:
     return cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
 
 
+@pytest.mark.parametrize(
+    ("accepted", "gallery_size"), [(True, 6), (False, 6), (True, 5)]
+)
+def test_legacy_individual_mlp_requires_six_people(client, accepted, gallery_size):
+    from src.common.face_crop import crop_face
+
+    ctx = client.app.state.ctx
+    frame = _face(1)
+    box = ctx.models.detector.detect(frame)[0]
+    vector = ctx.models.embedder.embed(crop_face(frame, box, 112, 1.0))
+    rows = []
+    for index in range(gallery_size):
+        sample = np.roll(vector, index * 10)
+        person = ctx.repo.create_person(
+            f"Person {index}", None, sample, ctx.models.model_version,
+            ctx.models.embedder.preprocessing_version, 3,
+        )
+        rows.append((int(person.id), person.name, sample))
+    ctx.gallery.load(rows)
+    ctx.models.attendance = SimpleNamespace(
+        frame_count=5, gallery_size=6, threshold=0.5,
+        predict=lambda frames, templates: SimpleNamespace(
+            candidate=str(rows[0][0]), score=0.9, accepted=accepted,
+        ),
+    )
+
+    with client.websocket_connect("/ws/stream?mode=attendance_mlp") as ws:
+        ws.receive_json()
+        for frame_id in range(1, 6):
+            ws.send_bytes(struct.pack(">I", frame_id) + _jpeg(frame))
+            result = ws.receive_json()
+            face = result["faces"][0]
+            assert face["logged"] is (accepted and gallery_size == 6 and frame_id == 5)
+            if frame_id == 5:
+                if gallery_size == 6:
+                    expected = "accepted" if accepted else "rejected"
+                    assert face["attendance_mlp"]["state"] == expected
+                else:
+                    assert face["attendance_mlp"]["state"] == "needs_gallery"
+                if accepted and gallery_size == 6:
+                    assert ws.receive_json()["type"] == "attendance_logged"
+
+    session_id = ctx.attendance.session_id()
+    report = client.get(f"/api/sessions/{session_id}/attendance").json()
+    assert len(report["present"]) == int(accepted and gallery_size == 6)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import app.backend.services.attendance as attendance_module
@@ -72,9 +121,7 @@ def _patched_record_spoof(tmp_path):
 
 
 def _register(client, name, seed, force=False):
-    files = [
-        ("frames", (f"{i}.jpg", _jpeg(_face(seed)), "image/jpeg")) for i in range(4)
-    ]
+    files = [("frames", (f"{i}.jpg", _jpeg(_face(seed)), "image/jpeg")) for i in range(4)]
     return client.post(
         "/api/persons/register",
         data={"name": name, "student_id": "1", "force": str(force).lower()},
@@ -91,6 +138,14 @@ def test_tracker_keeps_id_and_drops_lost_tracks():
     _, removed = tracker.update([])
     assert removed == [first[0].track_id]
     assert iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0
+
+
+def test_gallery_revisions_do_not_repeat_after_reload():
+    first = GalleryCache(2)
+    first.load([(1, "Alice", np.array([1, 0], dtype=np.float32))])
+    second = GalleryCache(2)
+    second.load([(1, "Alice", np.array([0, 1], dtype=np.float32))])
+    assert first.snapshot()[0] != second.snapshot()[0]
 
 
 def test_health_and_settings(client):
@@ -156,7 +211,7 @@ def test_live_gesture_stream_without_a_face(client, monkeypatch):
 
     models = client.app.state.ctx.models
     monkeypatch.setattr(models, "gesture", SimpleNamespace(open_stream=open_stream))
-    monkeypatch.setattr(models.detector, "detect", lambda frame: [])
+    monkeypatch.setattr(models.detector, "detect", lambda frame, score=None: [])
     frame = _jpeg(np.zeros((240, 320, 3), dtype=np.uint8))
     with client.websocket_connect("/ws/stream?mode=pipeline") as ws:
         assert ws.receive_json()["type"] == "ready"
@@ -189,6 +244,46 @@ def test_stream_without_configured_gesture_model(client, mode):
         }
     else:
         assert "gesture" not in result
+
+
+def test_individual_mlp_uses_the_updated_gallery_and_is_separate_from_live(client):
+    alice = _register(client, "Alice", seed=1).json()["person_id"]
+    calls = []
+
+    def predict(frames, templates):
+        calls.append(len(templates))
+        assert len(frames) == 5
+        return SimpleNamespace(candidate=str(alice), score=0.93, accepted=len(calls) > 1)
+
+    ctx = client.app.state.ctx
+    ctx.models.attendance = SimpleNamespace(
+        frame_count=5, gallery_size=None, threshold=0.9, predict=predict
+    )
+    frame = _jpeg(_face(1))
+
+    with client.websocket_connect("/ws/stream?mode=pipeline") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(struct.pack(">I", 1) + frame)
+        assert "attendance_mlp" not in ws.receive_json()["faces"][0]
+        assert calls == []
+
+    with client.websocket_connect("/ws/stream?mode=attendance_mlp") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        for frame_id in range(1, 11):
+            if frame_id == 6:
+                assert _register(client, "Bob", seed=2, force=True).status_code == 201
+            ws.send_bytes(struct.pack(">I", frame_id) + frame)
+            face = ws.receive_json()["faces"][0]
+            result = face["attendance_mlp"]
+            assert result["frames"] == (frame_id - 1) % 5 + 1
+            assert face["logged"] is (frame_id == 10)
+            if frame_id == 5:
+                assert result["state"] == "rejected"
+                assert result["candidate_name"] is None
+            if frame_id == 10:
+                assert result["state"] == "accepted"
+                assert ws.receive_json()["name"] == "Alice"
+    assert calls == [1, 2]
 
 
 def test_spoof_never_reaches_recognition(client):
@@ -234,3 +329,30 @@ def test_switching_embedder_reembeds_from_saved_faces(tmp_path):
     assert ctx.models.embedding_dim == 32
     assert len(ctx.gallery) == 1
     assert ctx.repo.list_persons(ctx.models.model_version)[0]["embedding_ok"]
+
+
+def test_mask_mode_reports_mask_and_skips_attendance(client):
+    _register(client, "Alice", seed=1)
+    masked = _face(1)
+    masked[120:180, 100:220] = 235  # nửa dưới khuôn mặt sáng, đều màu giống khẩu trang
+    with client.websocket_connect("/ws/stream?mode=mask") as ws:
+        assert ws.receive_json()["thresholds"]["mask"] == 0.5
+        for frame_id, frame in enumerate((_face(1), masked)):
+            ws.send_bytes(struct.pack(">I", frame_id) + _jpeg(frame))
+            face = ws.receive_json()["faces"][0]
+            assert face["identity"] is None and face["liveness"] is None
+            assert 0.0 <= face["mask"]["prob"] <= 1.0 and "mask" in face["mask"]["label"]
+    session_id = client.get("/api/health").json()["active_session_id"]
+    assert client.get(f"/api/sessions/{session_id}/attendance").json()["present"] == []
+    assert client.get("/api/health").json()["models"]["mask"]["detector_score"] == 0.6
+
+
+def test_mask_mode_without_model_is_refused(tmp_path):
+    config_path = _config(tmp_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["models"]["mask"] = {"type": "mask", "path": str(tmp_path / "missing.pt")}
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with TestClient(create_app(config_path)) as client:
+        assert client.get("/api/health").json()["models"]["mask"] is None
+        with client.websocket_connect("/ws/stream?mode=mask") as ws:
+            assert ws.receive_json()["type"] == "error"

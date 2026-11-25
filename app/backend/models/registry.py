@@ -15,7 +15,7 @@ import torch
 
 from ..config import REPO_ROOT, AppConfig, ModelSpec
 from .detectors import CenterDetector, HaarDetector, YuNetDetector, ensure_file
-from .dummy import DummyEmotion, DummyLiveness, PixelEmbedder
+from .dummy import DummyEmotion, DummyLiveness, DummyMask, PixelEmbedder
 from .gestures import GestureRecognizer
 
 DEFAULT_RECOGNITION_THRESHOLD = 0.5
@@ -30,6 +30,9 @@ class ModelBundle:
     emotion: Any
     info: dict[str, dict[str, Any]]
     checkpoint_recognition_threshold: float
+    mask: Any = None
+    mask_detector_score: float | None = None
+    attendance: Any = None
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
     gesture: GestureRecognizer | None = None
@@ -110,10 +113,10 @@ def build_embedder(config: AppConfig, spec: ModelSpec) -> tuple[Any, float]:
 
         embedder = MetricEmbedder(path, device=config.device)
         metrics = embedder.payload.get("val_metrics") or {}
-        threshold = metrics.get("dev_threshold")
-        if threshold is None:
-            dev_metrics = embedder.payload.get("dev_metrics") or {}
-            threshold = dev_metrics.get("threshold", DEFAULT_RECOGNITION_THRESHOLD)
+        legacy = embedder.payload.get("dev_metrics") or {}
+        threshold = metrics.get(
+            "dev_threshold", legacy.get("threshold", DEFAULT_RECOGNITION_THRESHOLD)
+        )
         return embedder, float(threshold)
     raise ValueError(f"unknown embedder type {spec.type!r}")
 
@@ -128,6 +131,26 @@ def build_emotion(config: AppConfig, spec: ModelSpec):
     raise ValueError(f"unknown emotion type {spec.type!r}")
 
 
+def build_mask(config: AppConfig, spec: ModelSpec | None):
+    """Trả về (model khẩu trang | None, ngưỡng score detector khi chạy mode mask)."""
+    if spec is None:
+        return None, None
+    score = (spec.model_extra or {}).get("detector_score")
+    score = None if score is None else float(score)
+    if spec.type == "dummy":
+        return DummyMask(), score
+    if spec.type == "mask":
+        path = config.path(spec.path or "")
+        if not spec.path or not path.exists():
+            # model khẩu trang là tính năng phụ: thiếu checkpoint thì app vẫn chạy, chỉ tắt tab Mask
+            log.warning("mask checkpoint not found (%s); mask mode disabled", path)
+            return None, score
+        from src.mask.predictor import MaskPredictor
+
+        return MaskPredictor(path, device=config.device), score
+    raise ValueError(f"unknown mask type {spec.type!r}")
+
+
 def _warm_up(bundle: ModelBundle) -> None:
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     box = (220, 140, 420, 340)
@@ -140,6 +163,25 @@ def _warm_up(bundle: ModelBundle) -> None:
     bundle.emotion.predict(
         crop_face(frame, box, bundle.emotion.img_size, bundle.emotion.crop_scale)
     )
+    if bundle.mask is not None:
+        bundle.mask.predict_frame(frame, box)
+
+
+def build_attendance(config: AppConfig, spec: ModelSpec | None, model_version: str):
+    if spec is None:
+        return None
+    if spec.type != "mlp":
+        raise ValueError(f"unknown attendance model type {spec.type!r}")
+    from src.recognition.attendance.model import AttendancePredictor
+
+    try:
+        predictor = AttendancePredictor(_require(config, spec), encoder_sha256=model_version)
+        if predictor.frame_count != 5:
+            raise ValueError("attendance MLP must use five frames")
+    except (FileNotFoundError, ValueError) as exc:
+        log.warning("attendance MLP unavailable: %s", exc)
+        return None
+    return predictor
 
 
 def build_models(config: AppConfig) -> ModelBundle:
@@ -150,6 +192,8 @@ def build_models(config: AppConfig) -> ModelBundle:
     liveness = build_liveness(config, specs.liveness)
     embedder, recognition_threshold = build_embedder(config, specs.embedder)
     emotion = build_emotion(config, specs.emotion)
+    mask, mask_detector_score = build_mask(config, specs.mask)
+    attendance = build_attendance(config, specs.attendance, str(embedder.model_version))
     info = {
         "detector": {"type": specs.detector.type, "path": specs.detector.path},
         "liveness": {
@@ -171,9 +215,36 @@ def build_models(config: AppConfig) -> ModelBundle:
             "path": specs.emotion.path,
             "labels": list(emotion.labels),
         },
+        "mask": None
+        if mask is None
+        else {
+            "type": specs.mask.type,
+            "path": specs.mask.path,
+            "arch": mask.arch,
+            "checkpoint_threshold": float(mask.threshold),
+            "img_size": mask.img_size,
+            "crop_scale": mask.crop_scale,
+            "detector_score": mask_detector_score,
+        },
     }
+    if attendance is not None:
+        info["attendance"] = {
+            "type": "mlp",
+            "path": specs.attendance.path,
+            "threshold": attendance.threshold,
+            "frame_count": attendance.frame_count,
+            "gallery_size": attendance.gallery_size,
+        }
     bundle = ModelBundle(
-        detector, liveness, embedder, emotion, info, recognition_threshold
+        detector,
+        liveness,
+        embedder,
+        emotion,
+        info,
+        recognition_threshold,
+        mask=mask,
+        mask_detector_score=mask_detector_score,
+        attendance=attendance,
     )
     if spec := specs.gesture:
         gesture_info = {"type": spec.type, "path": spec.path, "available": False}

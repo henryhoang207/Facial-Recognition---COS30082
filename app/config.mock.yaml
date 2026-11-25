@@ -23,10 +23,14 @@ models:
     path: artifacts/hand_gestures/alphabet
     hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
     device: auto
+  mask:
+    type: dummy
+    detector_score: 0.6
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder
   liveness: null           # null = threshold trong checkpoint liveness
+  mask: null               # null = threshold trong checkpoint khẩu trang (0.5)
 
 pipeline:
   max_faces: 5

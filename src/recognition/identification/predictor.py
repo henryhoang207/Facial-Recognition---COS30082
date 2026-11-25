@@ -43,13 +43,15 @@ def _validate_payload(payload: object, *, allow_training: bool) -> dict:
     method = metadata.get("method")
     margin = metadata.get("margin")
     class_count = metadata.get("class_count")
+    embedding_dim = metadata.get("embedding_dim")
     if (
         not isinstance(method, str)
         or method not in {"triplet", "arcface"}
         or not isinstance(experiment, Mapping)
         or experiment.get("method") != method
-        or metadata.get("embedding_dim") not in (128, 256)
-        or experiment.get("embedding_dim") != metadata.get("embedding_dim")
+        or type(embedding_dim) is not int
+        or embedding_dim not in (128, 256)
+        or experiment.get("embedding_dim") != embedding_dim
         or not isinstance(class_count, int)
         or class_count < 2
         or not isinstance(margin, (float, int))

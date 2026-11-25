@@ -1,4 +1,4 @@
-export type Mode = "pipeline" | "liveness" | "recognition" | "emotion" | "register_check";
+export type Mode = "pipeline" | "liveness" | "recognition" | "emotion" | "register_check" | "mask" | "attendance_mlp";
 
 export interface Liveness {
   label: "live" | "spoof";
@@ -22,6 +22,13 @@ export interface Emotion {
   probs: Record<string, number>;
 }
 
+export interface MaskResult {
+  label: "mask" | "no_mask";
+  prob: number; // P(mask), trung bình trong cửa sổ làm mượt
+  raw: number;
+  threshold: number;
+}
+
 export interface Face {
   track_id: number;
   box: [number, number, number, number];
@@ -30,6 +37,17 @@ export interface Face {
   emotion: Emotion | null;
   logged: boolean;
   quality?: { ok: boolean; reasons: string[]; face_pixels: number };
+  mask?: MaskResult | null;
+  attendance_mlp?: {
+    state: "needs_gallery" | "collecting" | "accepted" | "rejected";
+    frames: number;
+    required_frames: number;
+    gallery_size: number;
+    required_gallery_size: number | null;
+    score: number | null;
+    threshold: number;
+    candidate_name: string | null;
+  };
 }
 
 export interface GestureResult {
@@ -71,7 +89,7 @@ export type StreamEvent = AttendanceEvent | SpoofEvent;
 export interface Health {
   ok: boolean;
   models: Record<string, Record<string, unknown>> & { load_seconds?: number };
-  thresholds: { recognition: number; liveness: number };
+  thresholds: { recognition: number; liveness: number; mask: number | null };
   gallery_size: number;
   embedding_dim: number;
   active_session_id: number;
@@ -125,8 +143,8 @@ export interface Person {
 }
 
 export interface Settings {
-  thresholds: { recognition: number | null; liveness: number | null };
+  thresholds: { recognition: number | null; liveness: number | null; mask: number | null };
   pipeline: Record<string, number>;
   features: Record<string, boolean>;
-  effective: { recognition: number; liveness: number };
+  effective: { recognition: number; liveness: number; mask: number | null };
 }

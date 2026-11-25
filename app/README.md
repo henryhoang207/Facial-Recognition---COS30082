@@ -19,27 +19,22 @@ Open <http://127.0.0.1:8000/docs> for the interactive API. The first start downl
 Checkpoints are read from `model/` (see `app/config.yaml`), which git ignores:
 
 ```
-model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
-model/Classification/Model_B.pt
+model/Anti-spoofing/Liveness.pt
+model/Classification/Model_A.pt
 model/Emotion/emotionv4.pt
+model/Mask/mask_mobilenetv3s.pt          optional: Individual > Nam Khánh (face mask detection)
+model/Attendance/MLP-variable.pt       optional: Individual > Gia Khánh (attendance MLP)
 ```
+
+If the mask checkpoint is missing the app still starts; only the mask tab says the model is not loaded.
+
+**Individual → Gia Khánh** runs the attendance MLP with Model A. It verifies five consecutive live frames against the current gallery and records accepted check-ins in the active session. Register at least one person before testing. Use the variable gallery checkpoint from `src.recognition.attendance.train_variable_gallery` on the individual-feature branch. The original checkpoint requires exactly six people.
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 
-The Emotion loader reads the architecture from the checkpoint metadata and verifies all weights. The default MobileNetV4 checkpoint uses six labels. To use the seven-label MobileNetV3-Large checkpoint, set `models.emotion.path` to `model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt`. [Emotion checkpoints on Google Drive](https://drive.google.com/drive/folders/1w5z1pziVqTYj1JJ0MXEX0_Z_53s928N3)
-
-### Switch between face recognition models
-
-| Model | `models.embedder.type` | `models.embedder.path` |
-| --- | --- | --- |
-| A (ResNet-18) | `recognition` | `model/Classification/Model_A.pt` |
-| B (iResNet-34 + ArcFace, default) | `metric` | `model/Classification/Model_B.pt` |
-
-On startup or reload, the app rebuilds gallery embeddings from saved face crops for the selected checkpoint. Keep `thresholds.recognition: null` in the config and runtime settings to use that checkpoint's validation threshold. The checkpoint threshold was calibrated for pair verification. Gallery matching can use its own threshold through Settings. Use the **Recognition** timing on Live to compare per-frame embedding time.
-
 ### ASL Alphabet on the Live page
 
-The ASL card beside the camera shows the current letter and classifier confidence, including when only a hand is visible. Both configurations load the latest completed Alphabet MLP from `artifacts/hand_gestures/alphabet/`. Install the gesture dependencies with `python -m pip install -r requirements/hand-gestures.txt`. The card needs the training run's `metadata.json` and `best.pt`, plus `artifacts/hand_gestures/assets/hand_landmarker.task`. To pin a run, set `models.gesture.path` to its directory. The mock configuration uses dummy face classifiers and the same real ASL model. [Alphabet training and assets](../docs/hand-gestures/implementation-plan.md#asl-alphabet-follow-up)
+The ASL card beside the camera shows the current letter and classifier confidence, including when only a hand is visible. Install the gesture dependencies with `python -m pip install -r requirements/hand-gestures.txt`. Both configurations use the latest completed Alphabet MLP from `artifacts/hand_gestures/alphabet/` and the MediaPipe asset at `artifacts/hand_gestures/assets/hand_landmarker.task`. To pin a run, set `models.gesture.path` to its directory containing `metadata.json` and `best.pt`. [Alphabet training and assets](../docs/hand-gestures/implementation-plan.md#asl-alphabet-follow-up)
 
 Mock data for the UI: `python -m app.backend.seed --config app/config.mock.yaml --reset` (6 people, 2 sessions, 3 spoof events).
 
@@ -59,9 +54,17 @@ npm run dev      # http://localhost:5173, hot reload; API calls go to the backen
 npm run build    # writes app/frontend/dist, served by python -m app.run
 ```
 
-Pages: **Live** (camera plus one panel with all three models for the selected face: anti-spoofing, face recognition
-with the top 3 matches, and scores for the loaded emotion labels; check-ins below), **Register** (10-frame capture with a quality checklist),
-**Attendance** (sessions, present / absent / blocked, CSV export), **Settings** (thresholds, pipeline, models, registered people).
+Pages include **Live** (camera, ASL recognition, check-ins, and anti-spoofing, top 3 identity matches, and emotion scores
+for the selected face), **Register** (10-frame capture with a quality checklist),
+**Attendance** (sessions, present / absent / blocked, CSV export), **Individual** (one tab per team member for their
+own feature; members and features are listed in `app/frontend/src/members.ts`), **Settings** (thresholds, pipeline,
+models, registered people).
+
+Individual > Nam Khánh, **face mask detection**: camera with a mask / no-mask label on every face, counts, mask
+probability for the selected face (this frame and smoothed) and the model's FMLD test results. It uses `mode=mask`,
+which runs only the detector and the mask classifier (MobileNetV3-Small, `src/mask/`), with the YuNet score lowered to
+`models.mask.detector_score` (0.6) because masked faces score lower. Nothing is logged to attendance in this mode.
+The mask threshold can be changed in Settings.
 
 ## Layout
 
@@ -97,9 +100,10 @@ browser JPEG ──► decode ──► detect (YuNet) ──► track (IoU) ─
 
 - Labels are smoothed per track over `pipeline.smooth_window` frames: mean P(live), majority vote for identity, mean emotion probabilities.
 - A person is logged only after `stable_frames` consecutive frames that are all live and all the same person.
-- Set a threshold to `null` to use the value stored in the loaded checkpoint. Change runtime thresholds with `PUT /api/settings`.
+- Thresholds: `null` in the config means "use the one stored in the checkpoint" (liveness 0.985, Model A 0.416). They can be changed at runtime with `PUT /api/settings`.
+- Measured on a 4-thread CPU with the three real models: about 70 ms per frame with one face (detect 10, liveness 23, embed 13, emotion 23).
 
-Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. Other modes on the same socket: `register_check` (face count, size and liveness per frame, used by Register), and `liveness`, `recognition`, `emotion` to run one model on its own.
+Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. The frame-level `gesture` field is independent of face detection. The same socket supports `register_check` for registration, `liveness`, `recognition`, and `emotion` for single-model runs, and `mask` and `attendance_mlp` for the Individual page.
 
 WebSocket messages: client sends binary `4-byte big-endian frame_id + JPEG`; server answers with JSON `{"type": "result", "frame_id", "latency_ms", "faces": [{"track_id", "box": [x1, y1, x2, y2], "liveness", "identity", "emotion", "logged"}]}`, then any events.
 
