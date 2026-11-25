@@ -20,7 +20,7 @@ from .tracker import Track, Tracker
 if TYPE_CHECKING:
     from ..context import AppContext
 
-MODES = ("pipeline", "liveness", "recognition", "emotion", "register_check", "mask")
+MODES = ("pipeline", "liveness", "recognition", "emotion", "register_check", "mask", "attendance_mlp")
 
 
 class _Clock:
@@ -45,6 +45,8 @@ class FramePipeline:
             raise ValueError(f"mode must be one of {MODES}")
         if mode == "mask" and ctx.models.mask is None:
             raise ValueError("mask model is not configured (models.mask in app/config.yaml)")
+        if mode == "attendance_mlp" and ctx.models.attendance is None:
+            raise ValueError("attendance MLP is not configured with a compatible Model A")
         self.ctx = ctx
         self.mode = mode
         cfg = ctx.config.pipeline
@@ -102,6 +104,11 @@ class FramePipeline:
         if self.mode == "mask":
             face["mask"] = self._mask(frame, track, clock)
             return face
+        if self.mode == "attendance_mlp":
+            face["liveness"] = self._liveness(frame, track, clock)
+            face["logged"] = False
+            self._attendance_mlp(frame, track, face, events, clock)
+            return face
         if self.mode in ("pipeline", "liveness", "register_check"):
             face["liveness"] = self._liveness(frame, track, clock)
         if self.mode == "register_check":
@@ -121,7 +128,7 @@ class FramePipeline:
     # stages -------------------------------------------------------------
 
     def _liveness(self, frame, track: Track, clock: _Clock) -> dict[str, Any]:
-        fresh = self._due(track, 0) or track.last_live is None
+        fresh = self.mode == "attendance_mlp" or self._due(track, 0) or track.last_live is None
         if fresh:
             _, prob = clock.run("liveness", self.ctx.models.liveness.predict_frame, frame, track.box)
             track.last_live = float(prob)
@@ -152,9 +159,7 @@ class FramePipeline:
     def _identity(self, frame, track: Track, clock: _Clock) -> dict[str, Any]:
         threshold = self.ctx.recognition_threshold()
         if self._due(track, 1) or not track.identities:
-            size, scale = self.ctx.models.embed_crop
-            crop = crop_face(frame, track.box, size, scale)
-            vector = clock.run("embed", self.ctx.models.embedder.embed, crop)
+            vector = self._embed(frame, track, clock)
             matches = clock.run("match", self.ctx.gallery.match, vector, 3)
             track.top_matches = matches
             best = matches[0] if matches else None
@@ -176,6 +181,11 @@ class FramePipeline:
             ],
         }
         return result
+
+    def _embed(self, frame, track: Track, clock: _Clock) -> np.ndarray:
+        size, scale = self.ctx.models.embed_crop
+        crop = crop_face(frame, track.box, size, scale)
+        return clock.run("embed", self.ctx.models.embedder.embed, crop)
 
     def _emotion(self, frame, track: Track, clock: _Clock) -> dict[str, Any] | None:
         model = self.ctx.models.emotion
@@ -224,6 +234,73 @@ class FramePipeline:
         if person_id is None or track.logged_person == person_id:
             return
         _, name, score = track.identity()
+        self._log_attendance(track, face, events, person_id, name, score)
+
+    def _attendance_mlp(self, frame, track: Track, face: dict, events: list, clock: _Clock) -> None:
+        ctx = self.ctx
+        mlp, gallery = ctx.models.attendance, ctx.gallery
+        if mlp is None:
+            track.mlp_frames.clear()
+            return
+        revision, size = gallery.state()
+        if track.mlp_gallery_revision != revision:
+            track.mlp_frames.clear()
+            track.mlp_gallery_revision = revision
+
+        status = face["attendance_mlp"] = {
+            "state": "collecting",
+            "frames": 0,
+            "required_frames": mlp.frame_count,
+            "gallery_size": size,
+            "required_gallery_size": mlp.gallery_size,
+            "score": None,
+            "threshold": round(mlp.threshold, 4),
+            "candidate_name": None,
+        }
+        if face["liveness"]["label"] == "spoof" or track.last_live < ctx.liveness_threshold():
+            track.mlp_frames.clear()
+            if face["liveness"]["label"] == "spoof":
+                self._spoof_event(frame, track, face["liveness"]["prob"], events)
+            return
+        if not size or (mlp.gallery_size is not None and size != mlp.gallery_size):
+            track.mlp_frames.clear()
+            status["state"] = "needs_gallery"
+            return
+
+        vector = self._embed(frame, track, clock)
+        track.mlp_frames.append(vector)
+        status["frames"] = len(track.mlp_frames)
+        if len(track.mlp_frames) < mlp.frame_count:
+            return
+        snapshot_revision, entries = gallery.snapshot()
+        if snapshot_revision != revision:
+            track.mlp_frames.clear()
+            status["frames"] = 0
+            return
+        frames = np.stack(track.mlp_frames)
+        decision = clock.run(
+            "attendance_mlp", mlp.predict, frames,
+            {str(pid): entry[1] for pid, entry in entries.items()},
+        )
+        if ctx.gallery is not gallery or gallery.state()[0] != revision:
+            track.mlp_frames.clear()
+            status["frames"] = 0
+            return
+        status["score"] = round(decision.score, 4)
+        if not decision.accepted:
+            status["state"] = "rejected"
+            return
+        person_id = int(decision.candidate)
+        name, template = entries[person_id]
+        status.update(state="accepted", candidate_name=name)
+        if track.logged_person == person_id:
+            face["logged"] = True
+        else:
+            face["emotion"] = self._emotion(frame, track, clock)
+            score = float(np.mean(frames @ template))
+            self._log_attendance(track, face, events, person_id, name, score)
+
+    def _log_attendance(self, track: Track, face: dict, events: list, person_id: int, name: str, score: float) -> None:
         emotion = face["emotion"]["label"] if face["emotion"] else None
         logged = self.ctx.attendance.log(
             person_id, track.live_prob() or 0.0, score, emotion

@@ -2,6 +2,7 @@
 
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -130,6 +131,46 @@ def test_stream_recognises_and_logs_once(client):
     assert [row["name"] for row in report["present"]] == ["Alice"]
     csv_text = client.get(f"/api/sessions/{session_id}/export.csv").text
     assert "Alice" in csv_text
+
+
+def test_individual_mlp_uses_the_updated_gallery_and_is_separate_from_live(client):
+    alice = _register(client, "Alice", seed=1).json()["person_id"]
+    calls = []
+
+    def predict(frames, templates):
+        calls.append(len(templates))
+        assert len(frames) == 5
+        return SimpleNamespace(candidate=str(alice), score=0.93, accepted=len(calls) > 1)
+
+    ctx = client.app.state.ctx
+    ctx.models.attendance = SimpleNamespace(
+        frame_count=5, gallery_size=None, threshold=0.9, predict=predict
+    )
+    frame = _jpeg(_face(1))
+
+    with client.websocket_connect("/ws/stream?mode=pipeline") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(struct.pack(">I", 1) + frame)
+        assert "attendance_mlp" not in ws.receive_json()["faces"][0]
+        assert calls == []
+
+    with client.websocket_connect("/ws/stream?mode=attendance_mlp") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        for frame_id in range(1, 11):
+            if frame_id == 6:
+                assert _register(client, "Bob", seed=2, force=True).status_code == 201
+            ws.send_bytes(struct.pack(">I", frame_id) + frame)
+            face = ws.receive_json()["faces"][0]
+            result = face["attendance_mlp"]
+            assert result["frames"] == (frame_id - 1) % 5 + 1
+            assert face["logged"] is (frame_id == 10)
+            if frame_id == 5:
+                assert result["state"] == "rejected"
+                assert result["candidate_name"] is None
+            if frame_id == 10:
+                assert result["state"] == "accepted"
+                assert ws.receive_json()["name"] == "Alice"
+    assert calls == [1, 2]
 
 
 def test_spoof_never_reaches_recognition(client):

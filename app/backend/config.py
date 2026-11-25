@@ -25,6 +25,7 @@ class ModelsConfig(BaseModel):
     embedder: ModelSpec
     emotion: ModelSpec
     mask: ModelSpec | None = None  # tính năng cá nhân (Nam Khánh); không có thì tab Mask báo chưa cấu hình
+    attendance: ModelSpec | None = None
 
 
 class Thresholds(BaseModel):

@@ -33,6 +33,8 @@ class Track:
     last_spoof_event: float = 0.0
     last_live: float | None = None
     top_matches: list = field(default_factory=list)
+    mlp_frames: deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=5))
+    mlp_gallery_revision: int | None = None
 
     def __post_init__(self) -> None:
         self.live_probs = deque(maxlen=self.window)
@@ -121,6 +123,7 @@ class Tracker:
         for track_id in list(self.tracks):
             if track_id not in seen:
                 self.tracks[track_id].missed += 1
+                self.tracks[track_id].mlp_frames.clear()
                 if self.tracks[track_id].missed > self.ttl:
                     del self.tracks[track_id]
                     removed.append(track_id)

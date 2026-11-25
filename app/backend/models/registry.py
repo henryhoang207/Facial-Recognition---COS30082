@@ -30,6 +30,7 @@ class ModelBundle:
     checkpoint_recognition_threshold: float
     mask: Any = None
     mask_detector_score: float | None = None
+    attendance: Any = None
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -160,6 +161,23 @@ def _warm_up(bundle: ModelBundle) -> None:
         bundle.mask.predict_frame(frame, box)
 
 
+def build_attendance(config: AppConfig, spec: ModelSpec | None, model_version: str):
+    if spec is None:
+        return None
+    if spec.type != "mlp":
+        raise ValueError(f"unknown attendance model type {spec.type!r}")
+    from src.recognition.attendance.model import AttendancePredictor
+
+    try:
+        predictor = AttendancePredictor(_require(config, spec), encoder_sha256=model_version)
+        if predictor.frame_count != 5:
+            raise ValueError("attendance MLP must use five frames")
+    except (FileNotFoundError, ValueError) as exc:
+        log.warning("attendance MLP unavailable: %s", exc)
+        return None
+    return predictor
+
+
 def build_models(config: AppConfig) -> ModelBundle:
     torch.set_num_threads(max(1, min(8, torch.get_num_threads())))
     specs = config.models
@@ -169,6 +187,7 @@ def build_models(config: AppConfig) -> ModelBundle:
     embedder, recognition_threshold = build_embedder(config, specs.embedder)
     emotion = build_emotion(config, specs.emotion)
     mask, mask_detector_score = build_mask(config, specs.mask)
+    attendance = build_attendance(config, specs.attendance, str(embedder.model_version))
     info = {
         "detector": {"type": specs.detector.type, "path": specs.detector.path},
         "liveness": {
@@ -202,9 +221,17 @@ def build_models(config: AppConfig) -> ModelBundle:
             "detector_score": mask_detector_score,
         },
     }
+    if attendance is not None:
+        info["attendance"] = {
+            "type": "mlp",
+            "path": specs.attendance.path,
+            "threshold": attendance.threshold,
+            "frame_count": attendance.frame_count,
+            "gallery_size": attendance.gallery_size,
+        }
     bundle = ModelBundle(
         detector, liveness, embedder, emotion, info, recognition_threshold,
-        mask, mask_detector_score,
+        mask, mask_detector_score, attendance,
     )
     _warm_up(bundle)
     info["load_seconds"] = round(time.perf_counter() - started, 2)

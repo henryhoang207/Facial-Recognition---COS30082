@@ -1,4 +1,4 @@
-export type Mode = "pipeline" | "liveness" | "recognition" | "emotion" | "register_check" | "mask";
+export type Mode = "pipeline" | "liveness" | "recognition" | "emotion" | "register_check" | "mask" | "attendance_mlp";
 
 export interface Liveness {
   label: "live" | "spoof";
@@ -38,6 +38,16 @@ export interface Face {
   logged: boolean;
   quality?: { ok: boolean; reasons: string[]; face_pixels: number };
   mask?: MaskResult | null;
+  attendance_mlp?: {
+    state: "needs_gallery" | "collecting" | "accepted" | "rejected";
+    frames: number;
+    required_frames: number;
+    gallery_size: number;
+    required_gallery_size: number | null;
+    score: number | null;
+    threshold: number;
+    candidate_name: string | null;
+  };
 }
 
 export interface StreamResult {

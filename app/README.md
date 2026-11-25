@@ -19,13 +19,16 @@ Open <http://127.0.0.1:8000/docs> for the interactive API. The first start downl
 Checkpoints are read from `model/` (see `app/config.yaml`), which git ignores:
 
 ```
-model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt
+model/Anti-spoofing/Liveness.pt
 model/Classification/Model_A.pt
-model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt
+model/Emotion/emotionv4.pt
 model/Mask/mask_mobilenetv3s.pt          optional: Individual > Nam Khánh (face mask detection)
+model/Attendance/MLP-variable.pt       optional: Individual > Gia Khánh (attendance MLP)
 ```
 
 If the mask checkpoint is missing the app still starts; only the mask tab says the model is not loaded.
+
+**Individual → Gia Khánh** runs the attendance MLP with Model A. It verifies five consecutive live frames against the current gallery and records accepted check-ins in the active session. Register at least one person before testing. Use the variable gallery checkpoint from `src.recognition.attendance.train_variable_gallery` on the individual-feature branch. The original checkpoint requires exactly six people.
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 

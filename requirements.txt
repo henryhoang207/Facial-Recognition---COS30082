@@ -23,6 +23,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 sqlmodel>=0.0.22
 python-multipart>=0.0.9
+timm==1.0.24
 PyYAML==6.0.3
 pydantic==2.12.5
 
