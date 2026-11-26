@@ -1,4 +1,7 @@
-export type Mode = "pipeline" | "liveness" | "recognition" | "emotion" | "register_check" | "mask" | "attendance_mlp";
+export type IndividualMode = "challenge" | "gesture" | "head_pose" | "face_parsing";
+export type Mode =
+  | "pipeline" | "liveness" | "recognition" | "emotion" | "register_check" | "mask" | "attendance_mlp"
+  | IndividualMode;
 
 export interface Liveness {
   label: "live" | "spoof";
@@ -29,6 +32,51 @@ export interface MaskResult {
   threshold: number;
 }
 
+export interface ChallengeResult {
+  state: "checking" | "challenge" | "passed" | "failed";
+  reason: "live" | "challenge" | "timeout" | null;
+  live_prob: number;
+  raw: number;
+  threshold: number;
+  frames: number;
+  required_frames: number;
+  yaw: number | null; // độ, > 0 = người quay sang trái của họ
+  turn_deg: number;
+  steps: ("left" | "right")[];
+  step_index: number;
+  step: "left" | "right" | null;
+  hold: number;
+  hold_frames: number;
+  seconds_left: number | null;
+  retry_in: number | null;
+  identity: Identity | null;
+}
+
+export interface HeadPoseResult {
+  yaw: number;
+  pitch: number;
+  roll: number;
+  direction: "frontal" | "left" | "right" | "up" | "down";
+  landmarks: [number, number][] | null;
+  source: "model" | "detector" | "starting"; // detector = landmark hỏng; starting = chưa có kết quả model
+}
+
+export interface FaceParsingResult {
+  overlay: string; // PNG data URL phủ lên vùng `region`
+  region: [number, number, number, number];
+  parts: { name: string; color: string; share: number }[];
+}
+
+export interface GestureResult {
+  status: "no_hand" | "collecting" | "detected" | "other";
+  label: string | null;
+  confidence: number | null;
+  top: { label: string; prob: number }[];
+  progress: number;
+  handedness: string | null;
+  points: [number, number][] | null; // 21 điểm, toạ độ chuẩn hoá 0..1 theo frame
+}
+
 export interface Face {
   track_id: number;
   box: [number, number, number, number];
@@ -48,9 +96,13 @@ export interface Face {
     threshold: number;
     candidate_name: string | null;
   };
+  challenge?: ChallengeResult | null;
+  head_pose?: HeadPoseResult | null;
+  face_parsing?: FaceParsingResult | null;
 }
 
-export interface GestureResult {
+/** Chữ cái ASL tĩnh trên trang Live (mode "pipeline"). */
+export interface AlphabetResult {
   status: "detected" | "no_hand" | "unavailable";
   label: string | null;
   confidence: number | null;
@@ -63,7 +115,10 @@ export interface StreamResult {
   frame_size: [number, number];
   latency_ms: Record<string, number>;
   faces: Face[];
-  gesture?: GestureResult;
+  // mode "pipeline": AlphabetResult; mode "gesture" (tab Đức Anh): GestureResult
+  gesture?: AlphabetResult | GestureResult;
+  face_parsing?: { error: string | null };
+  head_pose?: { error: string | null };
 }
 
 export interface AttendanceEvent {
@@ -86,9 +141,20 @@ export interface SpoofEvent {
 
 export type StreamEvent = AttendanceEvent | SpoofEvent;
 
+export interface IndividualInfo {
+  type: string;
+  path: string | null;
+  available: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
+
 export interface Health {
   ok: boolean;
-  models: Record<string, Record<string, unknown>> & { load_seconds?: number };
+  models: Record<string, Record<string, unknown>> & {
+    load_seconds?: number;
+    individual?: Partial<Record<IndividualMode, IndividualInfo>>;
+  };
   thresholds: { recognition: number; liveness: number; mask: number | null };
   gallery_size: number;
   embedding_dim: number;

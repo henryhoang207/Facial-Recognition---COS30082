@@ -22,11 +22,20 @@ Checkpoints are read from `model/` (see `app/config.yaml`), which git ignores:
 model/Anti-spoofing/Liveness.pt
 model/Classification/Model_A.pt
 model/Emotion/emotionv4.pt
-model/Mask/mask_mobilenetv3s.pt          optional: Individual > Nam Khánh (face mask detection)
-model/Attendance/MLP-variable.pt       optional: Individual > Gia Khánh (attendance MLP)
+model/individual/Nam Khanh/mask_mobilenetv3s.pt             Individual > Nam Khánh (face mask)
+model/individual/Gia Khanh/MLP-variable.pt                   Individual > Gia Khánh (attendance MLP)
+model/individual/Hoan/adaptive-liveness-distilled.pt         Individual > Hoan (adaptive liveness)
+model/individual/Duc Anh/best (2).pt                         Individual > Đức Anh (ASL signs, MLP + GRU)
+model/individual/Thanh/model.safetensors                     Individual > Đức Thành (head pose)
+model/individual/Duc/best.pt                                 Individual > Mạnh Đức (face parsing)
+artifacts/hand_gestures/assets/hand_landmarker.task          MediaPipe hand tracker for Đức Anh's tab
 ```
 
-If the mask checkpoint is missing the app still starts; only the mask tab says the model is not loaded.
+All individual checkpoints are optional: a missing or broken one only disables its own tab, which then shows the
+reason. Đức Anh's tab also needs `pip install -r requirements/hand-gestures.txt` and the
+[hand_landmarker.task](https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task)
+file. MediaPipe installs `opencv-contrib-python` 5, which replaces the pinned OpenCV 4; afterwards run
+`pip uninstall -y opencv-contrib-python` and `pip install --force-reinstall opencv-python==4.13.0.92`.
 
 **Individual → Gia Khánh** runs the attendance MLP with Model A. It verifies five consecutive live frames against the current gallery and records accepted check-ins in the active session. Register at least one person before testing. Use the variable gallery checkpoint from `src.recognition.attendance.train_variable_gallery` on the individual-feature branch. The original checkpoint requires exactly six people.
 
@@ -65,6 +74,16 @@ probability for the selected face (this frame and smoothed) and the model's FMLD
 which runs only the detector and the mask classifier (MobileNetV3-Small, `src/mask/`), with the YuNet score lowered to
 `models.mask.detector_score` (0.6) because masked faces score lower. Nothing is logged to attendance in this mode.
 The mask threshold can be changed in Settings.
+
+The other tabs use the modes in `app/backend/individual/` (one module per feature, configured under
+`models.individual` in `app/config.yaml`). None of them writes attendance.
+
+| Tab | Mode | What runs |
+| --- | --- | --- |
+| Hoan | `challenge` | Distilled MobileNetV3-Small liveness on every frame. A face above the checkpoint threshold after 5 frames passes; a doubtful face must turn to its own left and right (random order, 20°, 10 s). The turn is measured from YuNet's eye and nose points, so a flat photo cannot follow it. Only a verified face is recognised. |
+| Đức Anh | `gesture` | Đức Anh's code from `src/hand-gestures/` (MediaPipe hand landmarks, 2 s window, sequence features, MLP + GRU). No face detection. |
+| Đức Thành | `head_pose` | `src/head_pose/predictor.py`: Thành's checkpoint rebuilt as HRNet-W48 (timm) + a 1/8-feature neck and 1024-d hidden layer; its 68-point 300W head is decoded from a 256 px crop (1.4 x the face box) and fitted to a generic 3D face with `solvePnP` for yaw / pitch / roll. Only the 1/8 feature the head needs is computed; on CPU it picks bf16 when that is faster, `device: auto` uses a GPU when there is one, and the model runs on a background thread so the stream keeps its frame rate (landmarks follow the face box between results); a result whose landmarks disagree with YuNet's 5 points (hand over the face) falls back to those points. Needs `timm` (in requirements.txt). |
+| Mạnh Đức | `face_parsing` | `src/face_parsing/predictor.py`: the BiSeNet-style network (ResNet-18, 11 LaPa classes, 512 px) rebuilt from Mạnh Đức's checkpoint, which loads strictly. Kept at 512 px (lower sizes lose the eyes and lips); bf16 on CPUs that support it (same masks, about 2x faster), GPU with `device: auto`, and a background thread so the stream keeps its frame rate; the mask is coloured, sent as a small PNG and moved with the face box between results. |
 
 ## Layout
 

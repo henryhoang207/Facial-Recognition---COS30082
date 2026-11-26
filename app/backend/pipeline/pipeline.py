@@ -1,6 +1,8 @@
 """Per-frame pipeline: detect -> track -> liveness gate -> embed + match -> emotion -> attendance.
 
 Mode "mask" (individual feature) is separate: detect -> track -> mask / no mask, nothing is logged.
+Modes in app/backend/individual (challenge, gesture, head_pose, face_parsing) run one member's
+feature on its own; they never write attendance.
 
 One FramePipeline per WebSocket connection (it owns the tracker); models, gallery
 and database are shared through AppContext.
@@ -17,12 +19,16 @@ import numpy as np
 
 from src.common.face_crop import crop_face
 
+from ..individual import FEATURE_MODULES, feature_class
 from .tracker import Track, Tracker
 
 if TYPE_CHECKING:
     from ..context import AppContext
 
-MODES = ("pipeline", "liveness", "recognition", "emotion", "register_check", "mask", "attendance_mlp")
+MODES = (
+    "pipeline", "liveness", "recognition", "emotion", "register_check", "mask", "attendance_mlp",
+    *FEATURE_MODULES,
+)
 log = logging.getLogger("faceguard")
 
 
@@ -54,6 +60,14 @@ class FramePipeline:
         self.mode = mode
         cfg = ctx.config.pipeline
         self.tracker = Tracker(cfg.track_iou, cfg.track_ttl_frames, cfg.smooth_window)
+        self.feature = None
+        if mode in FEATURE_MODULES:
+            model = ctx.models.individual.get(mode)
+            if model is None:
+                reason = (ctx.models.info.get("individual", {}).get(mode) or {}).get("error")
+                raise ValueError(reason or f"{mode} is not configured (models.individual.{mode})")
+            with ctx.models.lock:
+                self.feature = feature_class(mode)(ctx, model, self)
         self._gesture_stream = ExitStack()
         self._gesture_model = None
         self._gesture_predict = None
@@ -67,11 +81,16 @@ class FramePipeline:
         for track_id in list(self.tracker.tracks):
             self._drop(track_id)
         self.tracker.tracks.clear()
+        if self.feature is not None:
+            self.feature.close()
+            self.feature = None
 
     def _drop(self, track_id: int) -> None:
         drop = getattr(self.ctx.models.emotion, "drop_track", None)
         if drop:
             drop(track_id)
+        if self.feature is not None:
+            self.feature.drop(track_id)
 
     def _due(self, track: Track, offset: int) -> bool:
         every = self.ctx.config.pipeline.model_every_n
@@ -105,20 +124,26 @@ class FramePipeline:
             self.tracker.resize_window(cfg.smooth_window)
         clock = _Clock()
         events: list[dict[str, Any]] = []
+        extra: dict[str, Any] = {}
         with ctx.models.lock:
-            score = ctx.models.mask_detector_score if self.mode == "mask" else None
-            boxes = clock.run("detect", ctx.models.detector.detect, frame, score)[: cfg.max_faces]
-            tracks, removed = self.tracker.update(boxes)
-            for track_id in removed:
-                self._drop(track_id)
-            faces = [self._face(frame, track, clock, events) for track in tracks]
-            extra = {}
-            if self.mode == "pipeline":
-                extra["gesture"] = (
-                    clock.run("gesture", self._gesture, frame)
-                    if ctx.models.gesture is not None
-                    else self._gesture(frame)
-                )
+            if self.feature is not None:
+                faces = self._feature_faces(frame, clock) if self.feature.uses_faces else []
+                frame_result = self.feature.frame(frame, clock)
+                if frame_result is not None:
+                    extra[self.mode] = frame_result
+            else:
+                score = ctx.models.mask_detector_score if self.mode == "mask" else None
+                boxes = clock.run("detect", ctx.models.detector.detect, frame, score)[: cfg.max_faces]
+                tracks, removed = self.tracker.update(boxes)
+                for track_id in removed:
+                    self._drop(track_id)
+                faces = [self._face(frame, track, clock, events) for track in tracks]
+                if self.mode == "pipeline":
+                    extra["gesture"] = (
+                        clock.run("gesture", self._gesture, frame)
+                        if ctx.models.gesture is not None
+                        else self._gesture(frame)
+                    )
         return {
             "type": "result",
             "mode": self.mode,
@@ -127,6 +152,30 @@ class FramePipeline:
             "faces": faces,
             **extra,
         }, events
+
+    def _feature_faces(self, frame, clock: _Clock) -> list[dict[str, Any]]:
+        detector, cfg = self.ctx.models.detector, self.ctx.config.pipeline
+        if self.feature.needs_points and hasattr(detector, "detect_landmarks"):
+            found = clock.run("detect", detector.detect_landmarks, frame)[: cfg.max_faces]
+        else:
+            found = [(box, None) for box in clock.run("detect", detector.detect, frame)[: cfg.max_faces]]
+        tracks, removed = self.tracker.update([box for box, _ in found])
+        for track_id in removed:
+            self._drop(track_id)
+        points_by_box = {tuple(box): points for box, points in found}
+        self.feature.begin([track.track_id for track in tracks])
+        faces = []
+        for track in tracks:
+            faces.append({
+                "track_id": track.track_id,
+                "box": [int(v) for v in track.box],
+                "liveness": None,
+                "identity": None,
+                "emotion": None,
+                "logged": False,
+                self.mode: self.feature.face(frame, track, points_by_box.get(tuple(track.box)), clock),
+            })
+        return faces
 
     def _face(self, frame, track: Track, clock: _Clock, events: list) -> dict[str, Any]:
         face: dict[str, Any] = {

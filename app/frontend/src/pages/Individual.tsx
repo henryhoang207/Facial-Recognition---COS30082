@@ -1,6 +1,25 @@
 import { useState } from "react";
+import { useApp } from "../App";
 import { Tabs } from "../components/ui";
-import { MEMBERS } from "../members";
+import { MEMBERS, type Member } from "../members";
+import type { Health } from "../types";
+
+const STORAGE_KEY = "faceguard.individual.member";
+
+function isRunning(member: Member, health: Health | null) {
+  const model = member.feature?.model;
+  if (!model || !health) return false;
+  if (model === "mask" || model === "attendance") return Boolean(health.models[model]);
+  return Boolean(health.models.individual?.[model]?.available);
+}
+
+function savedMember() {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
 
 const initials = (name: string) =>
   name
@@ -10,8 +29,17 @@ const initials = (name: string) =>
     .join("");
 
 export function Individual() {
-  // mở sẵn tab của người đầu tiên đã có tính năng
-  const [memberId, setMemberId] = useState(() => (MEMBERS.find((m) => m.feature) ?? MEMBERS[0]).id);
+  const { health } = useApp();
+  // nhớ tab đã mở lần trước, mặc định là tab Nam Khánh
+  const [memberId, setMemberId] = useState(() => savedMember() ?? "namkhanh");
+  const choose = (id: string) => {
+    setMemberId(id);
+    try {
+      localStorage.setItem(STORAGE_KEY, id);
+    } catch {
+      // trình duyệt chặn lưu trữ: chỉ không nhớ được tab
+    }
+  };
   const member = MEMBERS.find((m) => m.id === memberId) ?? MEMBERS[0];
   const Feature = member.feature?.component;
 
@@ -26,13 +54,18 @@ export function Individual() {
         <Tabs
           label="Team member"
           value={member.id}
-          onChange={setMemberId}
+          onChange={choose}
           items={MEMBERS.map((m) => ({
             id: m.id,
             label: (
               <span className="member-tab">
                 {m.short}
-                {m.feature && <span className="member-dot" aria-label="has a feature" />}
+                {m.feature && (
+                  <span
+                    className={`member-dot ${isRunning(m, health) ? "is-on" : ""}`}
+                    title={isRunning(m, health) ? "Model loaded" : "Model not loaded"}
+                  />
+                )}
               </span>
             ),
           }))}

@@ -33,6 +33,7 @@ class ModelBundle:
     mask: Any = None
     mask_detector_score: float | None = None
     attendance: Any = None
+    individual: dict[str, Any] = field(default_factory=dict)
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
     gesture: GestureRecognizer | None = None
@@ -66,9 +67,15 @@ def _require(config: AppConfig, spec: ModelSpec) -> Path:
     if not spec.path:
         raise ValueError(f"model type {spec.type!r} needs a path")
     path = config.path(spec.path)
-    if not path.exists():
-        raise FileNotFoundError(f"checkpoint not found: {path}")
-    return path
+    if path.exists():
+        return path
+    # máy mỗi người có thể đặt tên checkpoint khác nhau: thử lần lượt các tên dự phòng trong config
+    for fallback in (spec.model_extra or {}).get("fallback_paths", []):
+        if config.path(fallback).exists():
+            log.warning("checkpoint %s not found, using %s", spec.path, fallback)
+            spec.path = fallback  # để /api/health hiện đúng file đang dùng
+            return config.path(fallback)
+    raise FileNotFoundError(f"checkpoint not found: {path}")
 
 
 def build_detector(config: AppConfig, spec: ModelSpec):
@@ -194,6 +201,9 @@ def build_models(config: AppConfig) -> ModelBundle:
     emotion = build_emotion(config, specs.emotion)
     mask, mask_detector_score = build_mask(config, specs.mask)
     attendance = build_attendance(config, specs.attendance, str(embedder.model_version))
+    from ..individual import build_individual
+
+    individual, individual_info = build_individual(config, specs.individual)
     info = {
         "detector": {"type": specs.detector.type, "path": specs.detector.path},
         "liveness": {
@@ -236,16 +246,10 @@ def build_models(config: AppConfig) -> ModelBundle:
             "gallery_size": attendance.gallery_size,
         }
     bundle = ModelBundle(
-        detector,
-        liveness,
-        embedder,
-        emotion,
-        info,
-        recognition_threshold,
-        mask=mask,
-        mask_detector_score=mask_detector_score,
-        attendance=attendance,
+        detector, liveness, embedder, emotion, info, recognition_threshold,
+        mask, mask_detector_score, attendance, individual,
     )
+    info["individual"] = individual_info
     if spec := specs.gesture:
         gesture_info = {"type": spec.type, "path": spec.path, "available": False}
         info["gesture"] = gesture_info

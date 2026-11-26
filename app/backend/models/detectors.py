@@ -50,6 +50,12 @@ class YuNetDetector:
         self._size: tuple[int, int] | None = None
 
     def detect(self, frame: np.ndarray, score_threshold: float | None = None) -> list[Box]:
+        return [box for box, _ in self.detect_landmarks(frame, score_threshold)]
+
+    def detect_landmarks(
+        self, frame: np.ndarray, score_threshold: float | None = None
+    ) -> list[tuple[Box, np.ndarray]]:
+        """Box kèm 5 điểm mốc YuNet: mắt phải, mắt trái, mũi, khoé miệng phải, khoé miệng trái."""
         height, width = frame.shape[:2]
         if self._size != (width, height):
             self.detector.setInputSize((width, height))
@@ -65,7 +71,16 @@ class YuNetDetector:
                 self.detector.setScoreThreshold(self.score_threshold)
         if faces is None:
             return []
-        return _by_area([_clip_box(*face[:4], width, height) for face in faces])
+        found = [
+            (_clip_box(*face[:4], width, height), face[4:14].reshape(5, 2).astype(np.float32))
+            for face in faces
+        ]
+        found = [(box, points) for box, points in found if box[2] > box[0] and box[3] > box[1]]
+        return sorted(found, key=lambda item: _area(item[0]), reverse=True)
+
+
+def _area(box: Box) -> int:
+    return (box[2] - box[0]) * (box[3] - box[1])
 
 
 class HaarDetector:

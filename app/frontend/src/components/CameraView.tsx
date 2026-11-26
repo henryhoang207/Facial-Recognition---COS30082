@@ -12,6 +12,8 @@ interface Props {
   flashKey?: number;
   selectedTrack?: number;
   onSelect?: (trackId: number) => void;
+  /** Vẽ thêm lên khung hình (toạ độ frame nhân `scale`, trục x đã lật như video). */
+  renderOverlay?: (scale: number, frameSize: [number, number]) => ReactNode;
   children?: ReactNode;
 }
 
@@ -34,6 +36,7 @@ export function CameraView({
   flashKey = 0,
   selectedTrack,
   onSelect,
+  renderOverlay,
   children,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
@@ -64,6 +67,7 @@ export function CameraView({
       <video ref={videoRef} className="camera-video" muted playsInline />
       {CAMERA_MESSAGES[state] && <div className="camera-message">{CAMERA_MESSAGES[state]}</div>}
       {flashKey > 0 && <div key={flashKey} className="camera-flash" aria-hidden="true" />}
+      {scale > 0 && renderOverlay && <div className="camera-overlay">{renderOverlay(scale, frameSize!)}</div>}
       {scale > 0 &&
         faces.map((face) => {
           const [x1, y1, x2, y2] = face.box;

@@ -5,7 +5,7 @@ import { CameraView } from "../components/CameraView";
 import { EmotionIcon, Empty, Meter, useToast } from "../components/ui";
 import { type CameraState, useCamera } from "../hooks/useCamera";
 import { type StreamStatus, useFaceStream } from "../hooks/useFaceStream";
-import type { AttendanceRow, Face, StreamEvent, StreamResult } from "../types";
+import type { AlphabetResult, AttendanceRow, Face, StreamEvent, StreamResult } from "../types";
 
 const STAGES = [
   { key: "detect", label: "Detect" },
@@ -155,7 +155,7 @@ function GestureAnalysis({
   status: StreamStatus;
   result: StreamResult | null;
 }) {
-  const gesture = camera === "on" && status === "live" ? result?.gesture : undefined;
+  const gesture = camera === "on" && status === "live" ? (result?.gesture as AlphabetResult | undefined) : undefined;
   const label = gesture?.status === "detected" ? gesture.label : null;
   const confidence = label ? gesture?.confidence : null;
 

@@ -25,6 +25,8 @@ artifacts/
 pytest-cache-files-*/
 *.pt
 *.pth
+*.safetensors
+*.task
 *.ckpt
 *.onnx
 
