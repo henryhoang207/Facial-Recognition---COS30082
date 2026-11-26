@@ -1348,7 +1348,11 @@ input[type="range"] {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--line-strong);
+  transition: background 0.25s;
+}
+.member-dot.is-on {
+  background: var(--ok);
 }
 .member-panel {
   display: flex;
@@ -1477,6 +1481,349 @@ input[type="range"] {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
+}
+
+/* Individual features: shared ------------------------------------------------- */
+
+.camera-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.camera-overlay > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.feature-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 760px;
+}
+.contract {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+code.block {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gauge-track {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: #efefeb;
+  overflow: hidden;
+}
+.gauge-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-soft);
+}
+.gauge-center {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+}
+.gauge-needle {
+  position: absolute;
+  top: -1px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  transition: left 0.15s linear;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+  transition:
+    color 0.2s,
+    background 0.2s,
+    border-color 0.2s;
+}
+.chip.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: #c9d8fb;
+}
+
+/* Hoan: adaptive liveness challenge */
+
+.turn-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px 12px 12px;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: calc(100% - 20px);
+  animation: rise 0.3s var(--ease);
+}
+@media (max-width: 640px) {
+  .turn-prompt {
+    bottom: 8px;
+    gap: 8px;
+    padding: 6px 12px 8px 8px;
+  }
+  .turn-title {
+    font-size: 14px;
+  }
+  .turn-sub {
+    font-size: 12px;
+  }
+}
+.turn-arrow {
+  color: var(--accent);
+  animation: nudge-left 0.9s var(--ease) infinite;
+}
+.turn-prompt.is-right .turn-arrow {
+  animation-name: nudge-right;
+}
+@keyframes nudge-left {
+  50% {
+    transform: translateX(-6px);
+  }
+}
+@keyframes nudge-right {
+  50% {
+    transform: translateX(6px);
+  }
+}
+.turn-title {
+  font-weight: 700;
+  font-size: 17px;
+}
+.turn-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+.turn-timer {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent);
+  transition: width 0.3s linear;
+}
+.challenge-card.is-challenge {
+  border-color: #c9d8fb;
+}
+.challenge-card.is-failed {
+  border-color: #f2c3aa;
+}
+.challenge-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.challenge-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  transition: color 0.2s;
+}
+.challenge-steps li.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+.challenge-steps li.done {
+  color: var(--ok);
+}
+.step-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 12px;
+}
+.challenge-steps li.done .step-mark {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #fff;
+}
+.hold {
+  margin-left: auto;
+  letter-spacing: 2px;
+  color: var(--accent);
+  font-size: 11px;
+}
+.identity-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+/* Đức Anh: hand signs */
+
+.hand-skeleton line {
+  stroke: #fff;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
+}
+.hand-skeleton circle {
+  fill: var(--accent);
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.sign-bubble {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  translate: -50% 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  font-size: 22px;
+  font-weight: 700;
+  animation: pop 0.25s var(--ease);
+}
+.sign-bubble .num {
+  font-size: 14px;
+  color: var(--accent);
+}
+.sign-now {
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+.sign-now.is-idle {
+  color: var(--line-strong);
+}
+.transcript {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.transcript .word {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  font-weight: 600;
+  animation: pop 0.25s var(--ease);
+}
+
+/* Thành: head pose */
+
+.pose-block {
+  flex-direction: row;
+  align-items: center;
+  gap: 18px;
+}
+.head-model {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 104px;
+  flex-shrink: 0;
+  perspective: 260px;
+  color: var(--accent);
+}
+.head-face {
+  transition: transform 0.15s linear;
+  transform-style: preserve-3d;
+}
+.pose-points circle {
+  fill: #4ade80;
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 0.6;
+}
+
+/* Đức: face parsing */
+
+.parsing-overlay {
+  position: absolute;
+  transform: scaleX(-1);
+  image-rendering: auto;
+  transition: opacity 0.2s;
+}
+.parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.parts li {
+  display: grid;
+  grid-template-columns: 12px 64px 1fr 48px;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+.part-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: #efefeb;
+  overflow: hidden;
+}
+.part-bar span {
+  display: block;
+  height: 100%;
+  transition: width 0.3s var(--ease);
+}
+.parts .num {
+  text-align: right;
 }
 
 /* Responsive, motion -------------------------------------------------------------------- */

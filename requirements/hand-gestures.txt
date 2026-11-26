@@ -1,0 +1,4 @@
+# Install after the shared requirements in the same virtual environment.
+# Newer MediaPipe releases install a second provider of the cv2 namespace.
+mediapipe==0.10.31
+xgboost==3.4.1

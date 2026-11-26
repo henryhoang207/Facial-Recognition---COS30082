@@ -21,6 +21,24 @@ models:
   mask:
     type: dummy
     detector_score: 0.6
+  individual:              # model thật nếu có trên máy, còn lại ước lượng từ 5 điểm YuNet
+    challenge:
+      type: adaptive_liveness
+      path: model/individual/Hoan/adaptive-liveness-distilled.pt
+    gesture:
+      type: asl_dynamic
+      path: model/individual/Duc Anh/best (2).pt
+      hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
+    head_pose:               # model thật của Thành nếu có checkpoint
+      type: external
+      path: model/individual/Thanh/model.safetensors
+      predictor: src.head_pose.predictor:HeadPosePredictor
+      device: auto           # GPU nếu có, không thì CPU (tự chọn bf16 nếu CPU hỗ trợ)
+    face_parsing:            # model thật của Mạnh Đức nếu có checkpoint
+      type: external
+      path: model/individual/Duc/best.pt
+      predictor: src.face_parsing.predictor:FaceParsingPredictor
+      device: auto           # GPU nếu có, không thì CPU (tự chọn bf16 nếu CPU hỗ trợ)
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder

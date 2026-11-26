@@ -13,19 +13,39 @@ models:
   liveness:
     type: liveness         # liveness | dummy
     path: model/Anti-spoofing/Liveness.pt
+    fallback_paths: [model/Anti-spoofing/liveness_mobilenetv3_2026-11-02.pt]  # tên cũ, dùng nếu thiếu file trên
   embedder:
     type: recognition      # recognition (Model A/C) | metric | dummy
     path: model/Classification/Model_A.pt
   emotion:
     type: emotion_gru      # emotion_gru | dummy
     path: model/Emotion/emotionv4.pt
+    fallback_paths: [model/Emotion/emotion_mobilenetv3_gru_gpu_2026-11-04.pt]
   mask:                    # tính năng cá nhân (Nam Khánh): có / không đeo khẩu trang
     type: mask             # mask | dummy; thiếu checkpoint thì app vẫn chạy, tab Mask bị tắt
-    path: model/Mask/mask_mobilenetv3s.pt
+    path: model/individual/Nam Khanh/mask_mobilenetv3s.pt
     detector_score: 0.6    # YuNet bỏ sót mặt đeo khẩu trang ở 0.8, nên hạ khi chạy mode mask
-  attendance:
+  attendance:               # tính năng cá nhân (Gia Khánh): MLP accept / deny sau Model A
     type: mlp
-    path: model/Attendance/MLP-variable.pt
+    path: model/individual/Gia Khanh/MLP-variable.pt
+  individual:               # các tính năng cá nhân khác, mỗi cái một mode riêng (app/backend/individual)
+    challenge:              # Hoan: liveness thích ứng + thử thách quay trái / phải
+      type: adaptive_liveness
+      path: model/individual/Hoan/adaptive-liveness-distilled.pt
+    gesture:                # Đức Anh: ký hiệu tay ASL động (cần requirements/hand-gestures.txt)
+      type: asl_dynamic
+      path: model/individual/Duc Anh/best (2).pt
+      hand_model: artifacts/hand_gestures/assets/hand_landmarker.task
+    head_pose:              # Thành: hướng quay khuôn mặt (landmark HRNet-W48 -> solvePnP)
+      type: external
+      path: model/individual/Thanh/model.safetensors
+      predictor: src.head_pose.predictor:HeadPosePredictor
+      device: auto           # GPU nếu có, không thì CPU (tự chọn bf16 nếu CPU hỗ trợ)
+    face_parsing:           # Mạnh Đức: phân vùng da / lông mày / mắt / mũi / môi / miệng / tóc
+      type: external
+      path: model/individual/Duc/best.pt
+      predictor: src.face_parsing.predictor:FaceParsingPredictor
+      device: auto           # GPU nếu có, không thì CPU (tự chọn bf16 nếu CPU hỗ trợ)
 
 thresholds:
   recognition: null        # null = val_score_threshold trong checkpoint embedder
