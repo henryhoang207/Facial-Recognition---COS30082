@@ -52,7 +52,7 @@ function useTranscript(gesture?: GestureResult) {
 function GestureLive({ info }: { info: IndividualInfo }) {
   const camera = useCamera();
   const stream = useFaceStream(camera.capture, "gesture", camera.state === "on");
-  const gesture = stream.result?.gesture;
+  const gesture = stream.result?.gesture as GestureResult | undefined;
   const { words, clear } = useTranscript(gesture);
   const classes = (Array.isArray(info.classes) ? (info.classes as string[]) : []).filter((c) => c !== "OTHER");
   const detected = gesture?.status === "detected" ? gesture : null;

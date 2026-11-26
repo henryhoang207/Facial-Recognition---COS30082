@@ -300,10 +300,11 @@ class Trainer:
 
     def _optimizer_step(self, gradient_factor: float) -> int:
         # Correct the final/unequal microbatches before AMP checks for overflow.
-        for group in self.optimizer.param_groups:
-            for parameter in group["params"]:
-                if parameter.grad is not None:
-                    parameter.grad.mul_(gradient_factor)
+        if gradient_factor != 1.0:
+            for group in self.optimizer.param_groups:
+                for parameter in group["params"]:
+                    if parameter.grad is not None:
+                        parameter.grad.mul_(gradient_factor)
         previous_scale = self.scaler.get_scale()
         self.scaler.unscale_(self.optimizer)
         if self.config.clip_grad_norm is not None:

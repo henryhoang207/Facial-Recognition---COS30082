@@ -7,7 +7,11 @@ import json
 import sqlite3
 import threading
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from functools import lru_cache
+from itertools import chain
 from pathlib import Path
 
 import cv2
@@ -30,6 +34,44 @@ def read_rows(path: Path) -> list[dict]:
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+class _DetectionResults(Mapping):
+    """Read cached detections on demand, retaining only a small decoded window.
+
+    Overrides are an in-memory overlay so manual review never changes the raw
+    detector cache. Millions of candidate/landmark dictionaries stay on disk.
+    """
+
+    def __init__(self, connection, records):
+        self.connection = connection
+        self.paths = dict.fromkeys(row["path"] for row in records)
+        self.overrides = {}
+        self._read = lru_cache(maxsize=1024)(self._read_uncached)
+
+    def _read_uncached(self, path):
+        row = self.connection.execute(
+            "SELECT payload FROM detections WHERE path=?", (path,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(path)
+        return json.loads(row[0])
+
+    def __getitem__(self, path):
+        if path not in self.paths:
+            raise KeyError(path)
+        return self.overrides[path] if path in self.overrides else self._read(path)
+
+    def __setitem__(self, path, value):
+        if path not in self.paths:
+            raise KeyError(path)
+        self.overrides[path] = value
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __len__(self):
+        return len(self.paths)
 
 
 class FaceManifestPreparer:
@@ -81,7 +123,7 @@ class FaceManifestPreparer:
             config.verification
         )
         by_path = {}
-        for row in classification + verification:
+        for row in chain(classification, verification):
             relative = Path(row["path"])
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("source image paths must stay within the dataset root")
@@ -89,87 +131,93 @@ class FaceManifestPreparer:
                 raise ValueError(f"duplicate source image: {row['path']}")
             by_path[row["path"]] = row
         records = [by_path[path] for path in sorted(by_path)]
+        source_images = len(by_path)
+        del by_path
         if scan_limit is not None:
             records = records[:scan_limit]
-        signatures = {row["path"]: self._signature(row) for row in records}
-        with sqlite3.connect(config.output_dir / "detections.sqlite3") as connection:
+        with closing(
+            sqlite3.connect(config.output_dir / "detections.sqlite3")
+        ) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS detections "
                 "(path TEXT PRIMARY KEY, signature TEXT NOT NULL, "
                 "payload TEXT NOT NULL)"
             )
-            cached = {
-                path: (signature, payload)
-                for path, signature, payload in connection.execute(
-                    "SELECT path,signature,payload FROM detections"
-                )
-            }
-            results, pending = {}, []
-            for row in records:
-                saved = cached.get(row["path"])
-                if saved and saved[0] == signatures[row["path"]]:
-                    results[row["path"]] = json.loads(saved[1])
-                else:
-                    pending.append(row)
-            reused = len(results)
+            reused, detected_now = 0, 0
             print(
                 json.dumps(
                     {
-                        "source_images": len(by_path),
+                        "source_images": source_images,
                         "scan_images": len(records),
-                        "reused": reused,
-                        "pending": len(pending),
+                        "cache_lookup": "chunked SQLite; decoded results stay on disk",
                     }
                 ),
                 flush=True,
             )
             with ThreadPoolExecutor(max_workers=config.workers) as pool:
                 with tqdm(
-                    total=len(pending),
+                    total=len(records),
                     desc="YuNet bbox scan",
                     mininterval=5,
                     disable=not config.progress,
                 ) as progress:
-                    for start in range(0, len(pending), config.chunk_size):
-                        chunk = pending[start : start + config.chunk_size]
+                    for start in range(0, len(records), config.chunk_size):
+                        source_chunk = records[start : start + config.chunk_size]
+                        chunk, signatures = [], {}
+                        for row in source_chunk:
+                            signature = self._signature(row)
+                            saved = connection.execute(
+                                "SELECT signature FROM detections WHERE path=?",
+                                (row["path"],),
+                            ).fetchone()
+                            if saved and saved[0] == signature:
+                                reused += 1
+                            else:
+                                chunk.append(row)
+                                signatures[row["path"]] = signature
                         for row, result in zip(
                             chunk, pool.map(self._inspect, chunk), strict=True
                         ):
                             path = row["path"]
-                            results[path] = result
                             connection.execute(
                                 "INSERT OR REPLACE INTO detections VALUES (?,?,?)",
                                 (path, signatures[path], json.dumps(result)),
                             )
-                            progress.update(1)
+                            detected_now += 1
                         connection.commit()
-        report = {
-            "complete": len(records) == len(by_path),
-            "source_images": len(by_path),
-            "scanned_images": len(records),
-            "reused": reused,
-            "detected_now": len(pending),
-            "detector_policy": self.policy,
-            "statuses": dict(Counter(item["status"] for item in results.values())),
-        }
-        write_json(config.output_dir / "scan_report.json", report)
-        if not report["complete"]:
+                        progress.update(len(source_chunk))
+            results = _DetectionResults(connection, records)
+            report = {
+                "complete": len(records) == source_images,
+                "source_images": source_images,
+                "scanned_images": len(records),
+                "reused": reused,
+                "detected_now": detected_now,
+                "detector_policy": self.policy,
+                "statuses": dict(Counter(item["status"] for item in results.values())),
+            }
+            write_json(config.output_dir / "scan_report.json", report)
+            if not report["complete"]:
+                return report
+            self._apply_overrides(results)
+            generation = self._generation()
+            directory = config.output_dir / f"protocol_{generation[:12]}"
+            directory.mkdir(parents=True, exist_ok=True)
+            report.update(
+                self._publish(directory, classification, verification, results)
+            )
+            report["output_dir"] = str(directory)
+            report["protocol_sha256"] = generation
+            report["statuses_after_overrides"] = dict(
+                Counter(item["status"] for item in results.values())
+            )
+            write_json(directory / "summary.json", report)
+            write_json(
+                directory / "resolved_config.json", config.model_dump(mode="json")
+            )
+            write_json(config.output_dir / "current.json", report)
             return report
-        self._apply_overrides(results)
-        generation = self._generation()
-        directory = config.output_dir / f"protocol_{generation[:12]}"
-        directory.mkdir(parents=True, exist_ok=True)
-        report.update(self._publish(directory, classification, verification, results))
-        report["output_dir"] = str(directory)
-        report["protocol_sha256"] = generation
-        report["statuses_after_overrides"] = dict(
-            Counter(item["status"] for item in results.values())
-        )
-        write_json(directory / "summary.json", report)
-        write_json(directory / "resolved_config.json", config.model_dump(mode="json"))
-        write_json(config.output_dir / "current.json", report)
-        return report
 
     def _generation(self):
         config = self.config
@@ -241,15 +289,7 @@ class FaceManifestPreparer:
                 "face filtering leaves fewer than two complete "
                 "classification identities"
             )
-        retained = [
-            {
-                **with_box(row),
-                "source_label": row["label"],
-                "label": mapping[row["identity"]],
-            }
-            for row in retained
-            if row["identity"] in eligible
-        ]
+        retained = [row for row in retained if row["identity"] in eligible]
         verification_rows = [with_box(row) for row in verification if accepted(row)]
         pair_counts = {}
         for split in ("val", "test"):
@@ -279,7 +319,14 @@ class FaceManifestPreparer:
         box_columns = ["x1", "y1", "x2", "y2", "detector_status", "detector_sha256"]
         write_csv(
             directory / "vggface2_classification.csv",
-            retained,
+            (
+                {
+                    **with_box(row),
+                    "source_label": row["label"],
+                    "label": mapping[row["identity"]],
+                }
+                for row in retained
+            ),
             list(classification[0]) + ["source_label"] + box_columns,
         )
         write_json(directory / "vggface2_class_to_idx.json", mapping)
@@ -288,12 +335,14 @@ class FaceManifestPreparer:
             verification_rows,
             list(verification[0]) + box_columns,
         )
-        audit = []
-        for row in sorted(classification + verification, key=lambda item: item["path"]):
-            result = results[row["path"]]
-            box = result["box"] or ["", "", "", ""]
-            audit.append(
-                {
+
+        def audit_rows():
+            for row in sorted(
+                chain(classification, verification), key=lambda item: item["path"]
+            ):
+                result = results[row["path"]]
+                box = result["box"] or ["", "", "", ""]
+                yield {
                     "path": row["path"],
                     "identity": row["identity"],
                     "split": row["split"],
@@ -307,21 +356,45 @@ class FaceManifestPreparer:
                         result["candidates"], separators=(",", ":")
                     ),
                 }
-            )
-        write_csv(directory / "detector_catalog.csv", audit, list(audit[0]))
-        review = [
-            row for row in audit if row["status"] not in {"accepted", "manual_accept"}
+
+        audit_columns = [
+            "path",
+            "identity",
+            "split",
+            "status",
+            "width",
+            "height",
+            "confidence",
+            "faces",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "candidates",
         ]
-        write_csv(directory / "review.csv", review, list(audit[0]))
-        boxes = [
+        write_csv(directory / "detector_catalog.csv", audit_rows(), audit_columns)
+        review_images = sum(
+            item["status"] not in {"accepted", "manual_accept"}
+            for item in results.values()
+        )
+        write_csv(
+            directory / "review.csv",
+            (
+                row
+                for row in audit_rows()
+                if row["status"] not in {"accepted", "manual_accept"}
+            ),
+            audit_columns,
+        )
+        boxes = (
             {
                 **with_box(row),
                 "width": results[row["path"]]["width"],
                 "height": results[row["path"]]["height"],
             }
-            for row in classification + verification
+            for row in chain(classification, verification)
             if accepted(row)
-        ]
+        )
         write_csv(
             directory / "bbox_manifest.csv",
             boxes,
@@ -334,7 +407,7 @@ class FaceManifestPreparer:
             "dropped_classification_identities": dropped,
             "verification_images": len(verification_rows),
             "verification": pair_counts,
-            "review_images": len(review),
+            "review_images": review_images,
             "image_content_changed": False,
             "landmark_alignment_applied": False,
         }

@@ -2,7 +2,7 @@
 
 This optional command runs YuNet on input catalogs and publishes a separate recognition protocol with face bboxes. Use it for loose source images that need crop coordinates. The current Model A configuration uses the pre-cropped VGGFace2 export directly.
 
-The pretrained detector is a preprocessing tool. Model A uses random initialization by default. Generated boxes are automatic detections, not human-verified identity annotations.
+The pretrained detector is a preprocessing tool. Model A uses random initialization by default. Generated boxes are automatic detections, not human-verified identity annotations. This standalone workflow is optional for Model B. Its B0/B1 notebooks use the existing pre-cropped 112 by 112 source images and base manifests directly.
 
 ## Run detection
 
@@ -118,6 +118,10 @@ This reuses detector results and publishes a new protocol generation. Invalid, d
 ## Use the selected protocol for training
 
 To train Model A on a bbox protocol, select the generation through `data.manifest`, `verification.pairs`, and `verification.bbox_manifest`. `data.root` and `verification.root` continue to point at the original VGGFace2 image directory. Update all three manifest paths together when changing generations.
+
+B0/B1 identification defaults to `load_image_protocol` on the base `data/manifests/` directory. The compatibility setting `ExperimentConfig.face_protocol` names that directory and can select the full `data/manifests/vggface2_full/` export. `require_bboxes=False` selects complete source images. Only classification train rows enter P-by-K training, while verification val/test supply unseen dev/test identities. Images are decoded on demand and augmentation runs on each CUDA batch. The default embedding dimension is 128. The standard ArcFace B1 training profile uses batch 128, BF16 AMP, channels-last layout, and fused AdamW, with FP32 embedding normalization and evaluation.
+
+To reproduce a completed bbox-based experiment, `load_face_protocol` accepts a generation directory or `current.json`, and `require_bboxes=True` enforces bbox coverage. Changing between complete-image and bbox preprocessing requires a fresh run and calibration.
 
 Classification reads bboxes from its CSV. Verification requires bbox coverage for every image used in its pairs and applies the same shared square-crop function. GPU caches store those resulting crops. The verification catalog checksum is recorded in calibration reports and training metadata; changing bboxes invalidates an old calibration or incompatible resume.
 

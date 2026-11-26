@@ -28,6 +28,7 @@ class ModelsConfig(BaseModel):
     attendance: ModelSpec | None = None
     # tính năng cá nhân chạy như một mode riêng: challenge | gesture | head_pose | face_parsing
     individual: dict[str, ModelSpec] = {}
+    gesture: ModelSpec | None = None
 
 
 class Thresholds(BaseModel):

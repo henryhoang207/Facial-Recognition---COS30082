@@ -511,6 +511,30 @@ code {
 .analysis-card.is-spoof {
   border-color: #f2c3aa;
 }
+.gesture-card {
+  padding: 16px 18px;
+}
+.gesture-result {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+.gesture-letter {
+  display: grid;
+  place-items: center;
+  min-width: 52px;
+  min-height: 52px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 30px;
+  font-weight: 700;
+}
+.gesture-result .meter {
+  flex: 1;
+}
 .analysis-head {
   display: flex;
   justify-content: space-between;

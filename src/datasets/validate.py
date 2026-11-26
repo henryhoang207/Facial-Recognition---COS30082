@@ -3,6 +3,7 @@
 import csv
 import json
 from collections import Counter, defaultdict
+from importlib import import_module
 
 from .catalog import write_json
 from .config import PreparationConfig
@@ -34,6 +35,10 @@ class ManifestValidator:
     def __init__(self, config: PreparationConfig):
         self.config = config
         self.directory = config.output_dir
+
+    def hand_gestures(self) -> dict:
+        validate = import_module("src.hand-gestures.manifest").validate_gesture_rows
+        return validate(rows(self.directory / "hand_gestures" / "clips.csv"))
 
     def recognition(self) -> dict:
         classification = rows(self.directory / "vggface2_classification.csv")

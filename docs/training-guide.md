@@ -52,13 +52,13 @@ To regenerate the training lock after an intentional dependency change, run:
 uv pip compile requirements/training.in --universal --python-version 3.12 --torch-backend cu130 --emit-index-url --emit-find-links --output-file requirements/training-cu130.lock.txt
 ```
 
-Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/main-cu130-margin-0.3-gpu-aug/`. Run their isolated software check with:
+Open the metric-learning notebooks under `notebooks/metrics-learn/` with **Python (FaceGuard CUDA 13.0)** (kernel ID `mtrlearn`). Their default artifacts root is `artifacts/iresnet34-images-128d/`. Run their isolated software check with:
 
 ```powershell
 .venv/Scripts/python.exe scripts/smoke_recognition_notebooks.py --kernel mtrlearn
 ```
 
-The smoke command requires a shared Python 3.12-3.14/CUDA 13.0 kernel (the standard Windows setup uses Python 3.14) and creates a fresh directory under `artifacts/smoke-main-cu130/`. Executed notebooks go in its `notebooks/` directory and bounded training outputs go in `smoke/`. Data manifests remain shared under `artifacts/shared/manifests/`. Its metrics are not model-quality results. Metric-learning runs record environment versions and reject reuse or resume under a different recorded runtime or training contract. Earlier private-loop metric checkpoints are not migrated automatically and remain untouched. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for the full flow.
+The smoke command requires a shared Python 3.12-3.14/CUDA 13.0 kernel (the standard Windows setup uses Python 3.14) and creates a fresh directory under `artifacts/smoke-main-cu130/`. Executed notebooks go in its `notebooks/` directory and bounded training outputs go in `smoke/`. Data manifests remain shared under `data/manifests/`. Its metrics are not model-quality results. Metric-learning runs record environment versions and reject reuse or resume under a different recorded runtime or training contract. Earlier private-loop metric checkpoints are not migrated automatically and remain untouched. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for the full flow.
 
 ## Check the shared trainer with the example
 

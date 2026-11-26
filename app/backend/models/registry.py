@@ -1,4 +1,4 @@
-"""Build the four models from app/config.yaml. The app only talks to the shared interfaces."""
+"""Build the app models from app/config.yaml."""
 
 from __future__ import annotations
 
@@ -7,14 +7,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from pickle import UnpicklingError
 from typing import Any
 
 import numpy as np
 import torch
 
-from ..config import AppConfig, ModelSpec
+from ..config import REPO_ROOT, AppConfig, ModelSpec
 from .detectors import CenterDetector, HaarDetector, YuNetDetector, ensure_file
 from .dummy import DummyEmotion, DummyLiveness, DummyMask, PixelEmbedder
+from .gestures import GestureRecognizer
 
 DEFAULT_RECOGNITION_THRESHOLD = 0.5
 log = logging.getLogger("faceguard")
@@ -34,6 +36,7 @@ class ModelBundle:
     individual: dict[str, Any] = field(default_factory=dict)
     # torch module không nên chạy song song từ nhiều thread
     lock: threading.RLock = field(default_factory=threading.RLock)
+    gesture: GestureRecognizer | None = None
 
     @property
     def embedding_dim(self) -> int:
@@ -247,6 +250,37 @@ def build_models(config: AppConfig) -> ModelBundle:
         mask, mask_detector_score, attendance, individual,
     )
     info["individual"] = individual_info
+    if spec := specs.gesture:
+        gesture_info = {"type": spec.type, "path": spec.path, "available": False}
+        info["gesture"] = gesture_info
+        try:
+            if spec.type != "alphabet_mlp":
+                raise ValueError(f"Unknown gesture model type {spec.type!r}")
+            extra = spec.model_extra or {}
+            bundle.gesture = GestureRecognizer(
+                _require(config, spec),
+                config.path(extra["hand_model"]),
+                extra.get("device", "auto"),
+            )
+        except (
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            UnpicklingError,
+            ValueError,
+        ) as exc:
+            log.warning("ASL recognition unavailable: %s", exc)
+        else:
+            checkpoint = bundle.gesture.checkpoint
+            if checkpoint.is_relative_to(REPO_ROOT):
+                checkpoint = checkpoint.relative_to(REPO_ROOT)
+            gesture_info.update(
+                available=True,
+                path=checkpoint.as_posix(),
+                device=bundle.gesture.device,
+            )
     _warm_up(bundle)
     info["load_seconds"] = round(time.perf_counter() - started, 2)
     return bundle

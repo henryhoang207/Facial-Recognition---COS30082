@@ -101,6 +101,13 @@ export interface Face {
   face_parsing?: FaceParsingResult | null;
 }
 
+/** Chữ cái ASL tĩnh trên trang Live (mode "pipeline"). */
+export interface AlphabetResult {
+  status: "detected" | "no_hand" | "unavailable";
+  label: string | null;
+  confidence: number | null;
+}
+
 export interface StreamResult {
   type: "result";
   frame_id: number;
@@ -108,7 +115,8 @@ export interface StreamResult {
   frame_size: [number, number];
   latency_ms: Record<string, number>;
   faces: Face[];
-  gesture?: GestureResult;
+  // mode "pipeline": AlphabetResult; mode "gesture" (tab Đức Anh): GestureResult
+  gesture?: AlphabetResult | GestureResult;
   face_parsing?: { error: string | null };
   head_pose?: { error: string | null };
 }

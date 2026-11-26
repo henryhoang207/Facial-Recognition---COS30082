@@ -143,6 +143,8 @@ def smoke_config(config: ExperimentConfig) -> ExperimentConfig:
         artifacts_root=Path(config.artifacts_root) / "smoke",
         epochs=5 if config.method == "arcface" else 2,
         num_workers=0,
+        evaluation_num_workers=0,
+        identities_per_batch=min(config.identities_per_batch, 8),
         warmup_epochs=0,
         minimum_epochs=2,
         confirmation_seeds=(),
@@ -186,8 +188,9 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
                 "The existing comparison uses a different K. Use a new artifact root."
             )
     choices = [locked_profile["P"] if locked_profile else config.identities_per_batch]
-    if not locked_profile and config.identities_per_batch > 4:
-        choices.append(4)
+    if not locked_profile:
+        while choices[-1] > 4:
+            choices.append(max(4, choices[-1] // 2))
     for identities_per_batch in choices:
         candidate = replace(config, identities_per_batch=identities_per_batch)
         success = True
@@ -210,6 +213,7 @@ def pilot_runtime(config: ExperimentConfig, prepared: PreparedData) -> Experimen
                             train=True,
                             batch_sampler=sampler,
                             num_workers=0,
+                            require_bboxes=config.require_bboxes,
                         )
                     )
                 )

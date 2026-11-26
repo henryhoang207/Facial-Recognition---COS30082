@@ -41,6 +41,10 @@ file. MediaPipe installs `opencv-contrib-python` 5, which replaces the pinned Op
 
 To swap a model, change its `type` / `path` in `app/config.yaml` and call `POST /api/models/reload` (or restart). No code changes.
 
+### ASL Alphabet on the Live page
+
+The ASL card beside the camera shows the current letter and classifier confidence, including when only a hand is visible. Install the gesture dependencies with `python -m pip install -r requirements/hand-gestures.txt`. Both configurations use the latest completed Alphabet MLP from `artifacts/hand_gestures/alphabet/` and the MediaPipe asset at `artifacts/hand_gestures/assets/hand_landmarker.task`. To pin a run, set `models.gesture.path` to its directory containing `metadata.json` and `best.pt`. [Alphabet training and assets](../docs/hand-gestures/implementation-plan.md#asl-alphabet-follow-up)
+
 Mock data for the UI: `python -m app.backend.seed --config app/config.mock.yaml --reset` (6 people, 2 sessions, 3 spoof events).
 
 Tests: `python -m pytest tests/test_app_backend.py` (dummy models, about 2 s).
@@ -59,8 +63,8 @@ npm run dev      # http://localhost:5173, hot reload; API calls go to the backen
 npm run build    # writes app/frontend/dist, served by python -m app.run
 ```
 
-Pages: **Live** (camera plus one panel with all three models for the selected face: anti-spoofing, face recognition
-with the top 3 matches, and all 7 emotion scores; check-ins below), **Register** (10-frame capture with a quality checklist),
+Pages include **Live** (camera, ASL recognition, check-ins, and anti-spoofing, top 3 identity matches, and emotion scores
+for the selected face), **Register** (10-frame capture with a quality checklist),
 **Attendance** (sessions, present / absent / blocked, CSV export), **Individual** (one tab per team member for their
 own feature; members and features are listed in `app/frontend/src/members.ts`), **Settings** (thresholds, pipeline,
 models, registered people).
@@ -118,7 +122,7 @@ browser JPEG ──► decode ──► detect (YuNet) ──► track (IoU) ─
 - Thresholds: `null` in the config means "use the one stored in the checkpoint" (liveness 0.985, Model A 0.416). They can be changed at runtime with `PUT /api/settings`.
 - Measured on a 4-thread CPU with the three real models: about 70 ms per frame with one face (detect 10, liveness 23, embed 13, emotion 23).
 
-Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. Other modes on the same socket: `register_check` (face count, size and liveness per frame, used by Register), and `liveness`, `recognition`, `emotion` to run one model on its own, and `mask` (detector + mask classifier, used by Individual).
+Each face in a `pipeline` result carries all three model outputs, including the top 3 gallery matches. The frame-level `gesture` field is independent of face detection. The same socket supports `register_check` for registration, `liveness`, `recognition`, and `emotion` for single-model runs, and `mask` and `attendance_mlp` for the Individual page.
 
 WebSocket messages: client sends binary `4-byte big-endian frame_id + JPEG`; server answers with JSON `{"type": "result", "frame_id", "latency_ms", "faces": [{"track_id", "box": [x1, y1, x2, y2], "liveness", "identity", "emotion", "logged"}]}`, then any events.
 

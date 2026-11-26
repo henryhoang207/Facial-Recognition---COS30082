@@ -27,6 +27,7 @@ class MetricLearningTask(TrainingTask):
     ) -> None:
         super().__init__()
         self.model = model
+        self.channels_last = config.channels_last
         device = next(model.parameters()).device
         self.head = (
             ArcFaceHead(
@@ -58,6 +59,8 @@ class MetricLearningTask(TrainingTask):
         images, labels = batch["image"], batch["label"]
         if images.dtype == torch.uint8:
             images = augment_training_batch(images, batch["augmentation_params"])
+        if self.channels_last:
+            images = images.contiguous(memory_format=torch.channels_last)
         embeddings = self.model(images)
         if self.head is None:
             loss, diagnostics = self.triplet(

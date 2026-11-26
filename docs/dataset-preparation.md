@@ -56,7 +56,13 @@ The November 12, 2026 export has 2,257,252 classification training images, 282,1
 
 The exporter hashes image bytes and checks image headers. Classification keeps SHA-256 matches and filename-prefix groups in the same split. These checks cover exact matches. They cannot establish separation of visually similar images or recording sessions. The export uses the current pre-cropped images directly. The older `test/n*/` tree is outside the current DuckDB protocol and needs a verified identity crosswalk before use alongside it.
 
-Use `configs/recognition/model_a.yaml` for training and `configs/recognition/verification.yaml` for verification. Model B can use the classification CSV and mapping with its own sampler. For loose source images, see the [optional bbox workflow](recognition-face-preparation.md).
+Use `configs/recognition/model_a.yaml` for Model A training and `configs/recognition/verification.yaml` for verification.
+
+The Model B notebooks use `load_image_protocol` with the base classification and verification manifests. Classification **train** rows feed P-by-K sampling, while verification val/test supply unseen dev/test identities and their published pairs. The adapter assigns contiguous training labels after removing repeated image content and identities with fewer than K distinct images. It reads logical splits from the manifests, so the source's physical `train/id_*/` layout works directly.
+
+Model B defaults to `data/manifests/`, matching the default output of `configs/datasets.yaml`. To use the full export generated above, set `CONFIG.face_protocol = ROOT / "data" / "manifests" / "vggface2_full"` before loading the protocol. The current source images are already tightly cropped at 112 by 112. B0/B1 decode the complete frame and apply square padding or resize only when required. The older `load_face_protocol` remains available for completed bbox-based runs. For loose source images, see the [optional bbox workflow](recognition-face-preparation.md).
+
+For the RTX 3070 Ti 8 GB / 32 GB RAM profile, B0/B1 use iResNet-34 with a 128-dimensional output. Four CPU workers stream uint8 batches, and augmentation and normalization run on CUDA after transfer. Workers retain compact metadata and a bounded prefetch queue. The standard ArcFace B1 profile uses batch 128, BF16 AMP, channels-last layout, and fused AdamW. Model weights, gradients, AdamW state, embedding normalization, angular calculations, and evaluation remain FP32. The Triplet B0 notebook can adjust its batch through a GPU memory pilot. See the [notebook guide](../notebooks/metrics-learn/RECOGNITION.md) for training settings.
 
 ## Use processed CelebA-Spoof with liveness
 

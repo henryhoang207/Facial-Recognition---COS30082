@@ -10,7 +10,9 @@ and database are shared through AppContext.
 
 from __future__ import annotations
 
+import logging
 import time
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -27,6 +29,7 @@ MODES = (
     "pipeline", "liveness", "recognition", "emotion", "register_check", "mask", "attendance_mlp",
     *FEATURE_MODULES,
 )
+log = logging.getLogger("faceguard")
 
 
 class _Clock:
@@ -65,10 +68,16 @@ class FramePipeline:
                 raise ValueError(reason or f"{mode} is not configured (models.individual.{mode})")
             with ctx.models.lock:
                 self.feature = feature_class(mode)(ctx, model, self)
+        self._gesture_stream = ExitStack()
+        self._gesture_model = None
+        self._gesture_predict = None
 
     # ------------------------------------------------------------------
 
     def close(self) -> None:
+        self._gesture_stream.close()
+        self._gesture_model = None
+        self._gesture_predict = None
         for track_id in list(self.tracker.tracks):
             self._drop(track_id)
         self.tracker.tracks.clear()
@@ -86,6 +95,25 @@ class FramePipeline:
     def _due(self, track: Track, offset: int) -> bool:
         every = self.ctx.config.pipeline.model_every_n
         return every == 1 or track.age == 1 or (track.age + offset) % every == 0
+
+    def _gesture(self, frame):
+        model = self.ctx.models.gesture
+        try:
+            if model is not self._gesture_model:
+                self._gesture_stream.close()
+                self._gesture_model = model
+                self._gesture_predict = None
+                if model is not None:
+                    self._gesture_predict = self._gesture_stream.enter_context(
+                        model.open_stream()
+                    )
+            if self._gesture_predict is not None:
+                return self._gesture_predict(frame)
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            self._gesture_stream.close()
+            self._gesture_predict = None
+            log.warning("ASL stream unavailable: %s", exc)
+        return {"status": "unavailable", "label": None, "confidence": None}
 
     # ------------------------------------------------------------------
 
@@ -110,6 +138,12 @@ class FramePipeline:
                 for track_id in removed:
                     self._drop(track_id)
                 faces = [self._face(frame, track, clock, events) for track in tracks]
+                if self.mode == "pipeline":
+                    extra["gesture"] = (
+                        clock.run("gesture", self._gesture, frame)
+                        if ctx.models.gesture is not None
+                        else self._gesture(frame)
+                    )
         return {
             "type": "result",
             "mode": self.mode,
